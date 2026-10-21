@@ -1,3 +1,4 @@
+import { accesAudit } from "@/lib/acces";
 import { chargerAudit } from "@/lib/audit";
 import { PLANS, type TypeDocument } from "@/lib/documents/plans";
 import { iaDisponible, messageErreurIA } from "@/lib/ia/client";
@@ -14,6 +15,7 @@ export async function POST(req: Request) {
   const audit = corps.auditId ? await chargerAudit(corps.auditId) : null;
   if (!audit) return new Response("Audit introuvable.", { status: 404 });
   if (!corps.type || !(corps.type in PLANS)) return new Response("Type de document inconnu.", { status: 400 });
+  if (!(await accesAudit(audit)).documents) return new Response("La génération des documents fait partie de l'offre Mise en conformité.", { status: 402 });
   if (!iaDisponible()) return new Response("La rédaction nécessite une clé d'API Claude (ANTHROPIC_API_KEY) côté serveur.", { status: 503 });
   if (!autoriser("doc:" + ipDe(req), 20, 60 * 60_000)) return new Response("Trop de documents demandés. Réessayez plus tard.", { status: 429 });
 

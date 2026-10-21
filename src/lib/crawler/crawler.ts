@@ -1,6 +1,8 @@
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import fs from "node:fs";
-import type { CookieObserve, DonneesCrawl, Formulaire, Lien, PageLegale, RequeteTierce } from "../types";
+import net from "node:net";
+import type { Capture, DonneesCrawl, Formulaire, Lien, PageLegale } from "../types";
+import { testerAccessibilite } from "./accessibilite";
 import {
   ALLEGATIONS_VERTES,
   CHATBOTS,
@@ -11,15 +13,25 @@ import {
   PLATEFORMES,
   RE,
 } from "./patterns";
-import { CMP_SIGNATURES, estCookieTechnique, identifierCookie, identifierDomaine } from "./trackers";
+import { proxyFiltrant } from "./proxy-filtrant";
+import { MOTIF_REFUS, classerCookies, classerRequetes, testerRefus } from "./refus";
+import { hoteInterdit } from "./reseau";
+import { CMP_SIGNATURES } from "./trackers";
+import { borne } from "./borne";
+import { texteDuPdf } from "./pdf-texte";
+import { parcourirTunnel } from "./tunnel";
 
 const USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 VigieAudit/0.1 (+https://github.com/florestanb/vigie)";
 const MAX_PAGES_UTILES = 5;
-const MAX_TEXTE_PAGE_LEGALE = 60_000;
+// Une CGV complète dépasse souvent 60 000 caractères : on garde tout, jusqu'à une limite haute.
+const MAX_TEXTE_PAGE_LEGALE = 200_000;
+const MAX_PDF_OCTETS = 15_000_000;
+const estPdf = (href: string) => /\.pdf$/i.test(new URL(href).pathname);
 const DELAI_PAGE = 25_000;
+const DUREE_MAX_AUDIT = 240_000;
 
-function cheminChromium(): string | undefined {
+export function cheminChromium(): string | undefined {
   const candidats = [
     process.env.CHROMIUM_PATH,
     "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
@@ -57,6 +69,7 @@ interface ExtraitPage {
   titre: string;
   langue: string | null;
   texte: string;
+  texteComplet: string;
   html: string;
   liens: Lien[];
   formulaires: Omit<Formulaire, "page">[];
@@ -87,32 +100,89 @@ const SCRIPT_EXTRACTION = `(() => {
     titre: document.title,
     langue: document.documentElement.getAttribute("lang"),
     texte: document.body ? document.body.innerText : "",
+    // Texte complet, sections repliées (accordéons) comprises, sans scripts ni styles : pour les pages légales.
+    texteComplet: (() => {
+      if (!document.body) return "";
+      const copie = document.body.cloneNode(true);
+      copie.querySelectorAll("script, style, noscript, template, svg").forEach((n) => n.remove());
+      copie.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, br, tr, section, article, dt, dd").forEach((n) => n.append("\\n"));
+      return (copie.textContent || "").replace(/[ \\t\\u00a0]+/g, " ").replace(/\\n\\s*\\n+/g, "\\n").trim();
+    })(),
     liens,
     formulaires,
     scripts: Array.from(document.scripts).map((s) => s.src).filter(Boolean),
   };
 })()`;
 
+// Beaucoup de sites ne chargent leur pied de page (et donc les liens légaux) qu'au défilement.
+const SCRIPT_DEFILEMENT = `(async () => {
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 40 && window.scrollY + window.innerHeight < document.body.scrollHeight - 10; i++) {
+    window.scrollBy(0, Math.max(600, window.innerHeight * 0.9));
+    await pause(150);
+  }
+  window.scrollTo(0, document.body.scrollHeight);
+  await pause(400);
+})()`;
+
+/** Adresses usuelles des pages légales (dont celles de Shopify), essayées quand aucun lien n'a été repéré. */
+const ADRESSES_USUELLES: Record<PageLegale["type"], string[]> = {
+  "mentions-legales": ["/mentions-legales", "/pages/mentions-legales", "/policies/legal-notice", "/mentions-legales.html", "/legal"],
+  confidentialite: ["/politique-de-confidentialite", "/pages/politique-de-confidentialite", "/policies/privacy-policy", "/confidentialite"],
+  cgv: ["/cgv", "/pages/cgv", "/conditions-generales-de-vente", "/pages/conditions-generales-de-vente", "/policies/terms-of-service"],
+  cgu: ["/cgu", "/pages/cgu", "/policies/terms-of-service", "/conditions-generales-d-utilisation", "/pages/conditions-generales-d-utilisation"],
+  cookies: ["/politique-cookies", "/pages/politique-cookies", "/cookies"],
+  accessibilite: ["/accessibilite", "/pages/accessibilite", "/declaration-accessibilite"],
+};
+
 async function extrairePage(page: Page): Promise<ExtraitPage> {
   const donnees = (await page.evaluate(SCRIPT_EXTRACTION)) as Omit<ExtraitPage, "url" | "html">;
   return { ...donnees, url: page.url(), html: await page.content() };
 }
 
-const MOTIF_REFUS = /^\s*(tout\s+refuser|refuser\s+tout|tout\s+rejeter|rejeter\s+tout|refuser(\s+les\s+cookies)?|je\s+refuse|non\s+merci|continuer\s+sans\s+accepter|reject\s+all|decline(\s+all)?|deny|refuse\s+all|nur\s+notwendige)\s*$/i;
-const MOTIF_ACCEPTER = /^\s*(tout\s+accepter|accepter(\s+tout|\s+et\s+fermer|\s+les\s+cookies)?|j'accepte|ok|accept(\s+all)?|allow\s+all|agree)\s*$/i;
+const MOTIF_ACCEPTER = /^[^\p{L}\p{N}]*(tout\s+accepter(\s+et\s+(fermer|continuer))?|accepter(\s+tout|\s+et\s+(fermer|continuer)|\s+(tous\s+)?les\s+cookies)?|j['’]accepte|ok(\s+pour\s+moi)?|d['’]accord|autoriser(\s+tous(\s+les\s+cookies)?|\s+tout)?|accept(\s+all)?(\s+cookies)?|allow\s+all(\s+cookies)?|agree|i\s+agree|alle\s+akzeptieren)[^\p{L}\p{N}]*$/iu;
+
+/** Texte du bandeau qui contient le bouton « Accepter » (conteneur de dialogue ou de consentement le plus proche). */
+const SCRIPT_TEXTE_BANDEAU = `(el) => {
+  const c = el.closest('[role="dialog"], [aria-modal="true"], [class*="consent" i], [id*="consent" i], [class*="cookie" i], [id*="cookie" i], [class*="cmp" i], [id*="cmp" i], [class*="privacy" i]');
+  let n = c || el;
+  if (!c) for (let i = 0; i < 4 && n.parentElement; i++) n = n.parentElement;
+  return (n.innerText || "").slice(0, 3000);
+}`;
+const ALTERNATIVE_PAYANTE = /s['’]abonner|abonnez-vous|je m['’]abonne|abonnement|subscribe|sans publicit[ée]/i;
+
+/** Le bandeau propose-t-il de s'abonner à la place d'accepter les traceurs (« mur » avec alternative payante) ? */
+async function bandeauPayant(page: Page): Promise<boolean> {
+  for (const frame of page.frames().slice(0, 15)) {
+    const accepter = frame.locator('button, a, [role="button"]').filter({ hasText: MOTIF_ACCEPTER });
+    if (!(await borne(accepter.count(), 3_000, 0)) || !(await borne(accepter.first().isVisible(), 3_000, false))) continue;
+    const texte = await borne(accepter.first().evaluate(new Function(`return (${SCRIPT_TEXTE_BANDEAU})`)() as (el: Element) => string), 3_000, "");
+    return ALTERNATIVE_PAYANTE.test(texte);
+  }
+  return false;
+}
 
 async function detecterBoutonRefus(page: Page): Promise<{ refus: boolean; accepter: boolean }> {
   const tester = async (motif: RegExp) => {
     const candidats = page.locator('button, a, [role="button"], input[type="button"], input[type="submit"]').filter({ hasText: motif });
-    const n = Math.min(await candidats.count(), 10);
-    for (let i = 0; i < n; i++) if (await candidats.nth(i).isVisible().catch(() => false)) return true;
-    for (const frame of page.frames().slice(1)) {
+    const n = Math.min(await borne(candidats.count(), 5_000, 0), 10);
+    for (let i = 0; i < n; i++) if (await borne(candidats.nth(i).isVisible(), 3_000, false)) return true;
+    // Bandeaux dans un cadre (iframe) : un cadre qui ne répond pas est ignoré au bout de 3 secondes.
+    for (const frame of page.frames().slice(1, 15)) {
       const c = frame.locator('button, a, [role="button"]').filter({ hasText: motif });
-      if ((await c.count().catch(() => 0)) > 0 && (await c.first().isVisible().catch(() => false))) return true;
+      if ((await borne(c.count(), 3_000, 0)) > 0 && (await borne(c.first().isVisible(), 3_000, false))) return true;
     }
     return false;
   };
   return { refus: await tester(MOTIF_REFUS), accepter: await tester(MOTIF_ACCEPTER) };
+}
+
+/** Tous les documents que couvre un lien (« CGV et confidentialité » mène à une seule page pour deux documents). */
+function typesDuLien(lien: Lien): PageLegale["type"][] {
+  const parTexte = MOTIFS_PAGES_LEGALES.filter((m) => m.texte.test(lien.texte)).map((m) => m.type);
+  if (parTexte.length) return parTexte;
+  const t = classerLienLegal(lien);
+  return t ? [t] : [];
 }
 
 function classerLienLegal(lien: Lien): PageLegale["type"] | null {
@@ -136,9 +206,34 @@ function uniques<T>(liste: T[], cle: (x: T) => string = (x) => String(x)): T[] {
 
 export interface OptionsCrawl {
   onEtape?: (message: string) => void;
+  /** false : pas de parcours du tunnel de commande (audits de prospection, que le site n'a pas demandés). */
+  tunnel?: boolean;
 }
 
-export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Promise<DonneesCrawl> {
+/** Résultat du parcours : les données de l'audit, plus les captures d'écran à enregistrer à part. */
+export interface ResultatCrawl extends DonneesCrawl {
+  capturesBrutes: Record<string, Buffer>;
+}
+
+/**
+ * Garde-fou global : au bout de DUREE_MAX_AUDIT, l'audit échoue avec un message clair, quoi qu'attende encore
+ * le navigateur (fermer le navigateur ne suffit pas toujours à débloquer une opération en cours).
+ */
+export function crawler(urlSaisie: string, options: OptionsCrawl = {}): Promise<ResultatCrawl> {
+  const etat: { navigateur: Browser | null } = { navigateur: null };
+  let chrono: NodeJS.Timeout | undefined;
+  const delai = new Promise<never>((_, ko) => {
+    chrono = setTimeout(() => {
+      etat.navigateur?.close().catch(() => {});
+      ko(new Error(`Le site met trop de temps à répondre : l'audit a été interrompu au bout de ${DUREE_MAX_AUDIT / 60_000} minutes. Réessayez plus tard.`));
+    }, DUREE_MAX_AUDIT);
+  });
+  const parcours = parcourir(urlSaisie, options, etat);
+  parcours.catch(() => {}); // s'il échoue après l'expiration, personne ne l'attend plus
+  return Promise.race([parcours, delai]).finally(() => clearTimeout(chrono));
+}
+
+async function parcourir(urlSaisie: string, options: OptionsCrawl, etat: { navigateur: Browser | null }): Promise<ResultatCrawl> {
   const debut = Date.now();
   const etape = options.onEtape ?? (() => {});
   const url = normaliserUrl(urlSaisie);
@@ -146,15 +241,46 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
 
   let navigateur: Browser | null = null;
   try {
-    const proxy = process.env.VIGIE_PROXY ? { server: process.env.VIGIE_PROXY } : undefined;
-    navigateur = await chromium.launch({ executablePath: cheminChromium(), headless: true, args: ["--no-sandbox"], proxy });
-    const contexte: BrowserContext = await navigateur.newContext({
-      userAgent: USER_AGENT,
-      locale: "fr-FR",
-      timezoneId: "Europe/Paris",
-      viewport: { width: 1366, height: 900 },
-      extraHTTPHeaders: { "Accept-Language": "fr-FR,fr;q=0.9" },
-    });
+    // Tout le trafic du navigateur passe par le proxy filtrant (aucun accès au réseau interne), y compris
+    // celui vers localhost, que Chromium exempte de proxy par défaut (« <-loopback> » annule l'exemption).
+    const proxy = process.env.VIGIE_PROXY ? { server: process.env.VIGIE_PROXY } : { server: await proxyFiltrant(), bypass: "<-loopback>" };
+    const lance = await chromium.launch({ executablePath: cheminChromium(), headless: true, args: ["--no-sandbox"], proxy });
+    navigateur = lance;
+    etat.navigateur = lance;
+    const ouvrirContexte = async (): Promise<BrowserContext> => {
+      const ctx = await lance.newContext({
+        userAgent: USER_AGENT,
+        locale: "fr-FR",
+        timezoneId: "Europe/Paris",
+        viewport: { width: 1366, height: 900 },
+        extraHTTPHeaders: { "Accept-Language": "fr-FR,fr;q=0.9" },
+        proxy,
+      });
+      if (process.env.VIGIE_PROXY) {
+        // Proxy sortant imposé par l'hébergement : le filtre local n'est pas en place, on filtre au moins
+        // chaque requête (les redirections lui échappent : préférer le proxy filtrant).
+        await ctx.route("**/*", async (route) => {
+          let hote = "";
+          try {
+            hote = new URL(route.request().url()).hostname;
+          } catch {
+            /* data:, blob: */
+          }
+          return hote && (await hoteInterdit(hote)) ? route.abort("blockedbyclient") : route.continue();
+        });
+      }
+      return ctx;
+    };
+    const contexte = await ouvrirContexte();
+    const capturesBrutes: Record<string, Buffer> = {};
+    const captures: Capture[] = [];
+    const capturer = async (p: Page, nom: string, legende: string) => {
+      const image = await p.screenshot({ type: "jpeg", quality: 60, timeout: 8_000 }).catch(() => null);
+      if (!image) return;
+      capturesBrutes[nom] = image;
+      captures.push({ nom, legende, date: new Date().toISOString() });
+    };
+    if (await hoteInterdit(new URL(url).hostname)) throw new Error("Cette adresse ne pointe pas vers un site public.");
 
     // Aucune interaction avec le bandeau n'a lieu pendant tout le parcours : chaque requête et
     // chaque cookie observés l'ont été sans consentement.
@@ -168,8 +294,18 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
         /* data:, blob: */
       }
     });
-    const page = await contexte.newPage();
-    const reponse = await page.goto(url, { waitUntil: "domcontentloaded", timeout: DELAI_PAGE });
+    let page = await contexte.newPage();
+    // Beaucoup de sites ne répondent correctement qu'avec « www » (certificat ou serveur absent sur le domaine nu).
+    const sansWww = new URL(url);
+    const avecWww = sansWww.hostname.startsWith("www.") || net.isIP(sansWww.hostname) ? null : url.replace("://", "://www.");
+    const reponse = await page.goto(url, { waitUntil: "domcontentloaded", timeout: DELAI_PAGE }).catch(async (e: Error) => {
+      if (!avecWww || !/ERR_(SSL|CERT|CONNECTION|NAME_NOT_RESOLVED|ADDRESS_UNREACHABLE|TIMED_OUT|EMPTY_RESPONSE)/.test(e.message)) throw e;
+      etape(`Nouvel essai avec ${new URL(avecWww).hostname}`);
+      // Onglet neuf : l'ancien est encore occupé à afficher sa page d'erreur.
+      await page.close().catch(() => {});
+      page = await contexte.newPage();
+      return page.goto(avecWww, { waitUntil: "domcontentloaded", timeout: DELAI_PAGE });
+    });
     await page.waitForLoadState("networkidle", { timeout: 12_000 }).catch(() => {});
     await page.waitForTimeout(2500);
     const urlFinale = page.url();
@@ -177,8 +313,13 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
     const racine = domaineRacine(hoteSite);
 
     etape("Relevé des cookies et traceurs déposés avant consentement");
-    const accueil = await extrairePage(page);
+    // Le bandeau est lu avant tout défilement, tel que l'internaute le découvre.
     const { refus, accepter } = await detecterBoutonRefus(page);
+    // Sans bouton de refus, le bandeau propose-t-il de s'abonner à la place ? Cas apprécié au cas par cas par la CNIL.
+    const murPayant = accepter && !refus ? await bandeauPayant(page) : false;
+    await page.evaluate(SCRIPT_DEFILEMENT).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+    const accueil = await extrairePage(page);
     const htmlScripts = accueil.html + accueil.scripts.join(" ");
     const cmp = CMP_SIGNATURES.find((c) => c.motifs.some((m) => m.test(htmlScripts)))?.nom ?? null;
 
@@ -192,18 +333,43 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
       }
     });
     const legales = new Map<PageLegale["type"], string>();
-    // Les liens de pied de page sont prioritaires.
-    for (const lien of [...internes.filter((l) => l.dansPiedDePage), ...internes]) {
-      const type = classerLienLegal(lien);
-      if (type && !legales.has(type)) legales.set(type, lien.href.split("#")[0]);
+    // Les liens de pied de page sont prioritaires. Les CGV en PDF sont souvent servies par un autre domaine (CDN) : on les suit aussi.
+    const pdfExternes = liens.filter((l) => !internes.includes(l) && /^https?:/.test(l.href) && estPdf(l.href));
+    for (const lien of [...internes.filter((l) => l.dansPiedDePage), ...internes, ...pdfExternes]) {
+      for (const type of typesDuLien(lien)) if (!legales.has(type)) legales.set(type, lien.href.split("#")[0]);
     }
     // Les CGV/CGU hébergées chez un tiers (Shopify policies, etc.) restent sur le même domaine ; on ne suit pas les autres.
 
+    // Faute de lien repéré, on essaie les adresses usuelles : une page qui existe mais n'est liée nulle part
+    // reste un manquement (elle doit être accessible), mais pas une absence.
+    const parAdresse = new Set<string>();
+    for (const [type, chemins] of Object.entries(ADRESSES_USUELLES) as [PageLegale["type"], string[]][]) {
+      if (legales.has(type)) continue;
+      const motif = MOTIFS_PAGES_LEGALES.find((m) => m.type === type)!;
+      for (const chemin of chemins) {
+        const essai = new URL(chemin, urlFinale).toString();
+        // Sans suivre de redirection : la cible d'une redirection échapperait au contrôle du réseau.
+        const r = await contexte.request.get(essai, { timeout: 8_000, maxRedirects: 0 }).catch(() => null);
+        if (!r?.ok()) continue;
+        const finale = new URL(r.url());
+        if (domaineRacine(finale.hostname) !== racine || finale.pathname === "/" ) continue;
+        if (!motif.texte.test((await r.text().catch(() => "")).slice(0, 200_000))) continue;
+        legales.set(type, finale.toString().split("#")[0]);
+        parAdresse.add(finale.toString().split("#")[0]);
+        break;
+      }
+    }
+
     const pagesLegales: PageLegale[] = [];
+    const pagesBloquees: string[] = [];
     const pagesVisitees = [urlFinale];
     const formulaires: Formulaire[] = accueil.formulaires.map((f) => ({ ...f, page: urlFinale }));
     let texteGlobal = accueil.texte;
+    // Texte des pages commerciales seules (accueil, produits…) : les pages légales parlent de tout et faussent les signaux.
+    let texteCommercial = accueil.texte;
     let htmlGlobal = accueil.html;
+    // Texte de chaque page visitée hors pages légales, pour retrouver une mention placée ailleurs.
+    const autresPages: { url: string; texte: string }[] = [{ url: urlFinale, texte: accueil.texte }];
     const dejaVu = new Map<string, PageLegale["type"]>();
 
     for (const [type, href] of legales) {
@@ -215,20 +381,84 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
         continue;
       }
       etape(`Lecture : ${href}`);
+      // Document PDF : le navigateur le télécharge au lieu de l'afficher ; on lit son texte directement.
+      const lirePdf = async () => {
+        const r = await contexte.request.get(href, { timeout: 20_000, maxRedirects: process.env.VIGIE_PROXY ? 0 : 3 });
+        const octets = await r.body();
+        if (!r.ok() || octets.length > MAX_PDF_OCTETS || !/^%PDF/.test(octets.subarray(0, 5).toString("latin1"))) throw new Error("PDF illisible");
+        const texte = await texteDuPdf(new Uint8Array(octets));
+        pagesLegales.push({
+          type,
+          url: href,
+          titre: decodeURIComponent(new URL(href).pathname.split("/").pop() ?? "document.pdf"),
+          texte: texte.slice(0, MAX_TEXTE_PAGE_LEGALE),
+          format: "pdf",
+          ...(texte.length < 200 ? { nonLu: "PDF sans texte lisible (document scanné ?)" } : {}),
+        });
+        texteGlobal += "\n" + texte;
+        pagesVisitees.push(href);
+        dejaVu.set(href, type);
+      };
+      if (estPdf(href)) {
+        await lirePdf().catch((e: Error) => erreurs.push(`Document ${href} illisible : ${e.message.split("\n")[0]}`));
+        continue;
+      }
+      let p: Page | null = null;
       try {
-        const p = await contexte.newPage();
-        await p.goto(href, { waitUntil: "domcontentloaded", timeout: DELAI_PAGE });
+        p = await contexte.newPage();
+        const page = p;
+        const versPdf = await page.goto(href, { waitUntil: "domcontentloaded", timeout: DELAI_PAGE }).then(
+          (r) => /application\/pdf/i.test(r?.headers()["content-type"] ?? ""),
+          (e: Error) => (/Download is starting/i.test(e.message) ? true : Promise.reject(e)),
+        );
+        if (versPdf) {
+          await page.close().catch(() => {});
+          await lirePdf();
+          continue;
+        }
+        await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
         await p.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
-        const ex = await extrairePage(p);
-        pagesLegales.push({ type, url: ex.url, titre: ex.titre, texte: ex.texte.slice(0, MAX_TEXTE_PAGE_LEGALE) });
+        let ex = await extrairePage(page);
+        // Vérification anti-robots : souvent levée seule en quelques secondes ; sinon la page n'a pas pu être lue.
+        if (RE.antiRobot.test(ex.titre + " " + ex.texte.slice(0, 2000))) {
+          await page.waitForTimeout(7_000);
+          await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => {});
+          ex = await extrairePage(page);
+          if (RE.antiRobot.test(ex.titre + " " + ex.texte.slice(0, 2000))) {
+            pagesBloquees.push(href);
+            erreurs.push(`Page ${href} bloquée par une vérification anti-robots`);
+            continue;
+          }
+        }
+        const complet = ex.texteComplet.length > ex.texte.length ? ex.texteComplet : ex.texte;
+        pagesLegales.push({ type, url: ex.url, titre: ex.titre, texte: complet.slice(0, MAX_TEXTE_PAGE_LEGALE), ...(parAdresse.has(href) ? { trouveeParAdresse: true } : {}) });
         formulaires.push(...ex.formulaires.map((f) => ({ ...f, page: ex.url })));
         texteGlobal += "\n" + ex.texte;
         pagesVisitees.push(ex.url);
         dejaVu.set(href, type);
-        await p.close();
       } catch (e) {
         erreurs.push(`Page ${href} illisible : ${(e as Error).message.split("\n")[0]}`);
+      } finally {
+        await p?.close().catch(() => {});
       }
+    }
+
+    // Mur de cookies ou page d'attente : toutes les pages légales affichent le même texte court, ou seulement le bandeau.
+    // Leur contenu réel n'a pas été lu : on le signale au lieu d'en tirer des constats.
+    const textes = new Map<string, number>();
+    for (const p of pagesLegales) if (!p.format) textes.set(p.texte, (textes.get(p.texte) ?? 0) + 1);
+    for (const p of pagesLegales) {
+      if (p.format || p.nonLu) continue;
+      const memeTexteAilleurs = (textes.get(p.texte) ?? 0) > 1 && new Set(pagesLegales.filter((x) => x.texte === p.texte).map((x) => x.url)).size > 1;
+      const bandeauSeul = p.texte.length < 2500 && RE.murCookies.test(p.texte);
+      if ((memeTexteAilleurs && p.texte.length < 5000) || bandeauSeul)
+        p.nonLu = memeTexteAilleurs ? "toutes les pages légales affichent le même court texte (mur de cookies ou page d'attente)" : "la page n'affiche qu'un bandeau ou un mur de cookies";
+    }
+
+    // Fréquent sur Shopify : les « Conditions d'utilisation » contiennent en réalité les conditions de vente.
+    const cgu = pagesLegales.find((p) => p.type === "cgu");
+    if (cgu && !pagesLegales.some((p) => p.type === "cgv") && /r[ée]tractation/i.test(cgu.texte) && /livraison|commande/i.test(cgu.texte)) {
+      pagesLegales.push({ ...cgu, type: "cgv" });
     }
 
     const utiles = uniques(
@@ -248,7 +478,9 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
         const ex = await extrairePage(p);
         formulaires.push(...ex.formulaires.map((f) => ({ ...f, page: ex.url })));
         texteGlobal += "\n" + ex.texte;
+        texteCommercial += "\n" + ex.texte;
         htmlGlobal += ex.html;
+        autresPages.push({ url: ex.url, texte: ex.texte });
         pagesVisitees.push(ex.url);
         await p.close();
       } catch (e) {
@@ -256,29 +488,12 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
       }
     }
 
-    const cookiesBruts = await contexte.cookies();
-    const maintenant = Date.now() / 1000;
-    const cookiesAvantConsentement: CookieObserve[] = cookiesBruts
-      .filter((c) => !estCookieTechnique(c.name))
-      .map((c) => {
-        const service = identifierCookie(c.name);
-        return {
-          nom: c.name,
-          domaine: c.domain,
-          expireJours: c.expires > 0 ? Math.round((c.expires - maintenant) / 86400) : null,
-          service: service?.service,
-          categorie: service ? (service.exempte ? "exempte" : service.categorie) : domaineRacine(c.domain.replace(/^\./, "")) === racine ? "premiere-partie" : "inconnu",
-        };
-      });
-    const requetesAvantConsentement: RequeteTierce[] = uniques(
-      requetes
-        .filter((r) => domaineRacine(r.host) !== racine)
-        .map((r) => {
-          const s = identifierDomaine(r.host, r.path);
-          return { domaine: r.host, categorie: s ? (s.exempte ? "exempte" : s.categorie) : "autre", service: s?.service };
-        }),
-      (r) => r.service ?? r.domaine,
-    );
+    const cookiesAvantConsentement = classerCookies(await contexte.cookies(), racine);
+    const requetesAvantConsentement = classerRequetes(requetes, racine);
+
+    // Relevés faits, le parcours peut désormais agir sur les pages : tests d'accessibilité sur l'accueil.
+    etape("Tests automatiques d'accessibilité");
+    const accessibilite = await testerAccessibilite(page);
 
     // 3. Signaux et identité.
     etape("Analyse des signaux du site");
@@ -293,7 +508,9 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
     const resultat: DonneesCrawl = {
       url,
       urlFinale,
-      https: urlFinale.startsWith("https://") && (reponse?.ok() ?? true),
+      // Une page de blocage (403) servie en HTTPS reste servie en HTTPS.
+      https: urlFinale.startsWith("https://"),
+      statutHttp: reponse?.status() ?? null,
       langue: accueil.langue,
       titre: accueil.titre,
       pagesVisitees,
@@ -304,6 +521,7 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
       cookiesAvantConsentement,
       cmp,
       boutonRefus: cmp || accepter ? refus : null,
+      ...(murPayant ? { murPayant: true } : {}),
       signaux: {
         panier: RE.panier.test(texteGlobal),
         paiement: PAIEMENTS.filter((p) => p.motif.test(htmlGlobal)).map((p) => p.nom),
@@ -321,7 +539,11 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
             return m ? [m[0]] : [];
           }),
         ).slice(0, 8),
-        alcool: (texteGlobal.match(new RegExp(RE.alcool.source, "gi"))?.length ?? 0) >= 4,
+        // Vendeur d'alcool : au moins 4 mentions et 2 mots différents sur les pages commerciales.
+        alcool: (() => {
+          const mots = (texteCommercial.match(new RegExp(RE.alcool.source, "gi")) ?? []).map((m) => m.toLowerCase().replace(/s$/, ""));
+          return mots.length >= 4 && new Set(mots).size >= 2;
+        })(),
         messageAlcool: RE.messageAlcool.test(texteGlobal),
         marketplace: RE.marketplace.test(texteGlobal),
         contenusNumeriques: RE.contenusNumeriques.test(accueil.texte),
@@ -347,15 +569,40 @@ export async function crawler(urlSaisie: string, options: OptionsCrawl = {}): Pr
           const zone = texteLegal.slice(idx, idx + 600);
           return HEBERGEURS.find((h) => h.motif.test(zone))?.nom ?? "mentionné";
         })(),
-        directeurPublication: RE.directeur.test(texteLegal),
+        directeurPublication: RE.directeur.test(texteLegal + "\n" + accueil.texte.slice(-4000)),
+        directeurAilleurs: RE.directeur.test(texteLegal + "\n" + accueil.texte.slice(-4000)) ? undefined : autresPages.find((x) => RE.directeur.test(x.texte))?.url,
         mediateur: RE.mediateur.test(texteLegal + tousLesLiens),
       },
       texteAccueil: accueil.texte.slice(0, 8000),
       erreurs,
-      duree: Date.now() - debut,
+      pagesBloquees,
+      accessibilite,
+      duree: 0,
     };
     resultat.signaux.lienODR ||= RE.odr.test(htmlGlobal);
-    return resultat;
+
+    const memeSite = (u: string) => {
+      try {
+        return domaineRacine(new URL(u).hostname) === racine;
+      } catch {
+        return false;
+      }
+    };
+    if (options.tunnel !== false && (resultat.signaux.panier || ["Shopify", "WooCommerce", "PrestaShop", "Magento"].includes(resultat.signaux.plateforme ?? ""))) {
+      etape("Parcours du tunnel de commande (sans rien commander)");
+      resultat.tunnel = await parcourirTunnel(contexte, urlFinale, liens, resultat.signaux.plateforme, memeSite, capturer);
+    }
+    await contexte.close().catch(() => {});
+
+    if (resultat.boutonRefus) {
+      etape("Clic sur « Tout refuser » et relevé des traceurs restants");
+      const vierge = await ouvrirContexte();
+      resultat.apresRefus = await testerRefus(vierge, urlFinale, racine, capturer);
+      await vierge.close().catch(() => {});
+    }
+    resultat.captures = captures;
+    resultat.duree = Date.now() - debut;
+    return { ...resultat, capturesBrutes };
   } finally {
     await navigateur?.close().catch(() => {});
   }

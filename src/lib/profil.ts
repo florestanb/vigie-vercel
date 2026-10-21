@@ -7,11 +7,13 @@ export function profilDepuisCrawl(c: DonneesCrawl, entreprise: Entreprise | null
   const s = c.signaux;
   const texteMentions = c.pagesLegales.filter((p) => p.type === "mentions-legales").map((p) => p.texte).join("\n");
 
-  const venteEnLigne = s.panier || s.paiement.length > 0 || (s.abonnement && s.compte && s.prix);
+  // Un lien vers un panier ou un bouton « S'abonner » (souvent vers une plateforme tierce de réservation ou de paiement) vaut vente en ligne.
+  const lienAchat = c.liens.some((l) => /\/(cart|panier|basket|checkout)(\/|\?|$)/i.test(l.href) || /^(s['’]abonner|souscrire|acheter|commander)\b/i.test(l.texte));
+  const venteEnLigne = s.panier || s.paiement.length > 0 || lienAchat || (s.abonnement && s.compte && s.prix);
   const types: SiteType[] = [];
   if (s.marketplace && venteEnLigne) types.push("marketplace");
-  if (venteEnLigne && !(s.abonnement && !s.panier)) types.push("ecommerce");
   if (s.abonnement && s.compte && !s.panier) types.push("saas");
+  if (venteEnLigne && !types.includes("saas")) types.push("ecommerce");
   if (s.blog && !venteEnLigne) types.push("media");
   if (s.commentaires) types.push("communaute");
   if (types.length === 0) types.push("vitrine");

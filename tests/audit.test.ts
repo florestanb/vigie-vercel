@@ -67,6 +67,18 @@ test("la boutique soignée passe les vérifications automatiques", () => {
   assert.ok(score.note >= 80, `note ${score.note}`);
 });
 
+test("les constats sont classés en illégal, zone de flou ou recommandation", async () => {
+  const { verdict } = await import("../src/lib/rules/engine");
+  const { resultats } = statut("boutique-risquee", "");
+  const v = (id: string) => verdict(resultats.find((r) => r.regle.id === id)!);
+  assert.equal(v("cookies.consentement-prealable"), "illegal"); // obligation légale, constat certain
+  assert.equal(v("id.immatriculation"), "illegal");
+  assert.equal(v("cookies.refus-simple"), "flou"); // exigence déduite de la loi par la CNIL
+  assert.equal(v("cookies.tiers-integres"), "flou"); // question non tranchée en France
+  assert.equal(v("vente.bouton-retractation"), "flou"); // peut se trouver dans l'espace client
+  assert.equal(v("vente.lien-rll-obsolete"), "recommande");
+});
+
 test("le contrôle de clé SIREN rejette les numéros invalides", async () => {
   const { luhn } = await import("../src/lib/rules/checks");
   assert.equal(luhn("552100554"), true);

@@ -1,0 +1,5 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Commande</title></head><body>
+<h1>Commande</h1><form><label>E-mail <input type="email" name="email"></label>
+<p>Total : 11,40 € TTC, livraison comprise. En validant, vous acceptez nos <a href="/cgv">conditions générales de vente</a>.</p>
+<button type="button" onclick="document.body.dataset.commande='passee'">Valider la commande</button></form>
+</body></html>

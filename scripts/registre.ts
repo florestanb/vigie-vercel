@@ -23,6 +23,7 @@ for (const d of domaines) {
   for (const r of CATALOGUE.filter((r) => r.domaine === d)) {
     lignes.push(`### ${r.titre}${r.obsolete ? " (abrogée, à retirer)" : ""}`, "");
     lignes.push(r.exigence, "");
+    lignes.push(`- **Nature** : ${{ loi: "obligation légale", flou: "zone de flou", recommandation: "recommandation" }[r.nature ?? "loi"]}${r.nuance ? ` (${r.nuance})` : ""}`);
     lignes.push(`- **Gravité** : ${r.gravite} · **Vérification** : ${r.verification}${r.check ? ` (\`${r.check}\`)` : ""} · **Document** : ${r.document}`);
     lignes.push(`- **S'applique à** : ${conditions(r.conditions)}`);
     if (r.applicableDepuis) lignes.push(`- **Applicable depuis** : ${r.applicableDepuis}`);

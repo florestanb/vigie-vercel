@@ -1,10 +1,17 @@
-/** Gabarit des pages légales de Vigie elle-même. Les champs entre crochets sont à compléter avant la mise en ligne. */
-export function PageLegale({ titre, children }: { titre: string; children: React.ReactNode }) {
+import { markdownVersHtml } from "@/lib/markdown";
+
+/** Pages légales de Vigie elle-même. Les champs « [À COMPLÉTER : …] » viennent de src/lib/editeur.ts. */
+export function PageLegale({ titre, texte }: { titre: string; texte: string }) {
+  const incomplet = texte.includes("[À COMPLÉTER");
   return (
     <div className="etroit page-texte">
       <h1>{titre}</h1>
-      <p className="avertissement" style={{ marginBottom: 24 }}>Page à compléter avec les informations de la société qui exploitera Vigie avant toute mise en ligne publique.</p>
-      {children}
+      {incomplet && (
+        <p className="avertissement" style={{ marginBottom: 24 }}>
+          Les passages surlignés sont à compléter dans <code>src/lib/editeur.ts</code> avant toute mise en ligne publique.
+        </p>
+      )}
+      <div className="texte-legal" dangerouslySetInnerHTML={{ __html: markdownVersHtml(texte) }} />
     </div>
   );
 }

@@ -1,6 +1,9 @@
 // Audit en ligne de commande, sans interface : npm run audit -- https://exemple.fr
 import { lancerAudit } from "../src/lib/audit";
-import { calculerScore, evaluer, trier } from "../src/lib/rules/engine";
+import { calculerScore, evaluer, trier, verdict } from "../src/lib/rules/engine";
+import { restreindreDroits } from "../src/lib/donnees";
+
+restreindreDroits();
 
 const url = process.argv[2];
 if (!url) {
@@ -10,8 +13,8 @@ if (!url) {
 const audit = await lancerAudit(url, (m) => console.error("·", m));
 const resultats = trier(evaluer(audit.profil, audit.constatsAuto, audit.constatsIA));
 const score = calculerScore(resultats);
-console.log(`\n${audit.url} : ${score.note}/100 (${score.manquants} manquants, ${score.critiquesManquants} critiques)\n`);
-for (const r of resultats.filter((r) => r.statut !== "conforme" && r.statut !== "a-verifier")) {
-  console.log(`[${r.statut}] ${r.regle.titre} (${r.regle.gravite})${r.preuve ? `\n    ${r.preuve}` : ""}`);
+console.log(`\n${audit.url} : ${score.note}/100 (${score.illegaux} illégaux dont ${score.critiquesIllegaux} critiques, ${score.flous} en zone de flou, ${score.recommandes} recommandations)\n`);
+for (const r of resultats.filter((r) => !["conforme", "a-verifier"].includes(verdict(r)))) {
+  console.log(`[${verdict(r)}] ${r.regle.titre} (${r.regle.gravite})${r.preuve ? `\n    ${r.preuve}` : ""}`);
 }
 console.log(`\nRapport complet : data/audits/${audit.id}.json`);

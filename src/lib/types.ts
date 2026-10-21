@@ -51,6 +51,17 @@ export interface Profil {
 }
 
 export type Gravite = "critique" | "majeure" | "mineure";
+
+/**
+ * Force juridique de l'exigence, indépendamment de sa gravité :
+ * - loi : écrite dans un texte (loi, code, règlement) ; ne pas la respecter est illégal ;
+ * - flou : déduite d'un texte par une autorité (CNIL, DGCCRF) ou appréciée au cas par cas par le juge ;
+ * - recommandation : bonne pratique, sans sanction directe.
+ */
+export type Nature = "loi" | "flou" | "recommandation";
+
+/** Classement d'un résultat pour l'utilisateur : ce qui est illégal, ce qui se discute, ce qui reste à voir. */
+export type Verdict = "illegal" | "flou" | "recommande" | "a-verifier" | "conforme";
 export type ModeVerification = "auto" | "ia" | "declaratif";
 export type DocumentCible =
   | "mentions-legales"
@@ -122,11 +133,17 @@ export interface Regle {
   conditions: Conditions;
   sources: SourceLegale[];
   sanction?: string;
+  /** Sanction résumée pour l'affichage (« Jusqu'à 375 000 € d'amende ») et son plafond en euros, pour trouver la plus lourde. */
+  risque?: { libelle: string; plafond: number };
   /** Date d'application, quand elle est récente ou future (AAAA-MM-JJ). */
   applicableDepuis?: string;
   /** Règle devenue obsolète : sa présence sur le site est signalée comme à retirer. */
   obsolete?: boolean;
   gravite: Gravite;
+  /** Par défaut « loi ». */
+  nature?: Nature;
+  /** Pourquoi l'exigence se discute (zone de flou) ou ce qui en dépend. Affiché avec le constat. */
+  nuance?: string;
   verification: ModeVerification;
   /** Identifiant de la vérification automatique (voir checks.ts). */
   check?: string;
@@ -140,6 +157,8 @@ export interface Constat {
   statut: Exclude<Statut, "non-applicable">;
   preuve?: string; // extrait ou observation qui justifie le statut
   url?: string;
+  /** Constat tiré d'un indice que Vigie ne peut pas établir avec certitude : il relève alors de la zone de flou. */
+  incertain?: boolean;
 }
 
 export interface ResultatRegle extends Constat {
@@ -179,12 +198,20 @@ export interface PageLegale {
   url: string;
   titre: string;
   texte: string;
+  /** Trouvée en essayant une adresse usuelle (ex. /mentions-legales), faute de lien repéré sur la page d'accueil. */
+  trouveeParAdresse?: boolean;
+  /** Document publié en PDF (texte extrait du fichier). */
+  format?: "pdf";
+  /** Le document existe mais son texte n'a pas pu être lu (PDF scanné…) : ce qu'il contient reste inconnu. */
+  nonLu?: string;
 }
 
 export interface DonneesCrawl {
   url: string;
   urlFinale: string;
   https: boolean;
+  /** Code HTTP de la page d'accueil (403 ou 429 : le site a probablement bloqué le robot). */
+  statutHttp: number | null;
   langue: string | null;
   titre: string;
   pagesVisitees: string[];
@@ -196,6 +223,8 @@ export interface DonneesCrawl {
   cookiesAvantConsentement: CookieObserve[];
   cmp: string | null; // solution de gestion du consentement détectée
   boutonRefus: boolean | null; // un bouton de refus visible au premier niveau
+  /** Le bandeau propose de s'abonner (offre payante) à la place d'accepter les traceurs. */
+  murPayant?: boolean;
   signaux: {
     panier: boolean;
     paiement: string[];
@@ -230,11 +259,76 @@ export interface DonneesCrawl {
     capital: boolean;
     hebergeur: string | null;
     directeurPublication: boolean;
+    /** Directeur de la publication trouvé hors des pages légales (page « À propos », contact…) : adresse de la page. */
+    directeurAilleurs?: string;
     mediateur: boolean;
   };
   texteAccueil: string;
   erreurs: string[];
+  /** Pages légales tombées sur une vérification anti-robots : ce qu'elles contiennent n'a pas pu être lu. */
+  pagesBloquees?: string[];
+  /** Second passage, dans un navigateur vierge : clic sur « Tout refuser », puis relevé de ce qui est encore déposé ou chargé. */
+  apresRefus?: ApresRefus;
+  /** Tests automatiques d'accessibilité (axe-core) sur la page d'accueil. */
+  accessibilite?: ResultatAccessibilite;
+  /** Parcours du tunnel de commande, jusqu'à la page de paiement exclue : rien n'est jamais commandé. */
+  tunnel?: Tunnel;
+  /** Captures d'écran prises pendant l'audit (enregistrées à part : noms seulement). */
+  captures?: Capture[];
   duree: number;
+}
+
+export interface Capture {
+  nom: string;
+  legende: string;
+  date: string;
+}
+
+export interface ApresRefus {
+  /** Un bouton de refus a été trouvé et cliqué. */
+  clique: boolean;
+  bouton?: string;
+  /** Cookies apparus après le clic (y compris au rechargement de la page). */
+  cookiesEcrits: CookieObserve[];
+  /** Services tiers contactés après le clic. */
+  requetes: RequeteTierce[];
+  erreur?: string;
+}
+
+export interface ViolationAccessibilite {
+  id: string;
+  impact: "critical" | "serious" | "moderate" | "minor" | null;
+  aide: string;
+  /** Critères WCAG concernés (ex. « 1.1.1 »). */
+  criteres: string[];
+  occurrences: number;
+  exemple?: string;
+}
+
+export interface ResultatAccessibilite {
+  page: string;
+  violations: ViolationAccessibilite[];
+  /** Nombre de règles automatiques passées avec succès. */
+  reussis: number;
+  erreur?: string;
+}
+
+export interface Tunnel {
+  /** Étapes franchies, dans l'ordre (adresse et ce qui a été fait). */
+  etapes: { url: string; action: string }[];
+  /** Le panier a pu être rempli. */
+  panierRempli: boolean;
+  /** La page de commande (avant paiement) a été atteinte. */
+  commandeAtteinte: boolean;
+  /** Libellés des boutons de validation finale repérés sur la page de commande. */
+  boutonsFinals: string[];
+  /** Lien vers les CGV ou case d'acceptation présents sur la page de commande. */
+  cgvSurCommande: boolean;
+  /** Frais de livraison ou leur mode de calcul annoncés dans le panier ou la commande. */
+  fraisLivraison: boolean;
+  /** Prix barré repéré sur une fiche produit : page, prix affiché, prix barré. */
+  prixBarre?: { url: string; texte: string };
+  erreur?: string;
 }
 
 export interface Entreprise {

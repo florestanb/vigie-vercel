@@ -7,6 +7,7 @@ export const metadata: Metadata = {
 };
 
 const VERIF = { auto: "Automatique", ia: "Lecture IA", declaratif: "À déclarer" } as const;
+const NATURE = { flou: "zone de flou", recommandation: "recommandation" } as const;
 
 export default function Registre() {
   const domaines = [...new Set(CATALOGUE.map((r) => r.domaine))];
@@ -34,8 +35,10 @@ export default function Registre() {
                 <tr key={r.id} id={r.id}>
                   <td>
                     <strong>{r.titre}</strong> {r.obsolete && <span className="date-loi">obsolète</span>}
+                    {r.nature && r.nature !== "loi" && <span className={`date-loi ${r.nature === "flou" ? "v-flou" : "v-recommande"}`}>{NATURE[r.nature]}</span>}
                     {r.applicableDepuis && !r.obsolete && <span className="date-loi" style={{ marginLeft: 6 }}>depuis le {new Date(r.applicableDepuis).toLocaleDateString("fr-FR")}</span>}
                     <p style={{ color: "var(--texte-doux)", marginTop: 4 }}>{r.exigence}</p>
+                    {r.nuance && <p style={{ color: "var(--texte-doux)", marginTop: 4, fontStyle: "italic" }}>{r.nuance}</p>}
                   </td>
                   <td className="col-cachee">
                     <div className="sources">

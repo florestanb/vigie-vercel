@@ -1,73 +1,81 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAudit } from "./AuditEnCours";
 
-type Evenement = { type: "etape"; message: string } | { type: "fin"; id: string } | { type: "erreur"; message: string };
-
+/**
+ * Champ « adresse du site » : il s'agrandit quand on clique dedans (la page s'estompe derrière), puis lance
+ * l'audit, qui s'affiche en grand par-dessus la page (voir AuditEnCours).
+ */
 export function FormulaireAudit() {
-  const router = useRouter();
+  const audit = useAudit();
   const [url, setUrl] = useState("");
-  const [etapes, setEtapes] = useState<string[]>([]);
-  const [enCours, setEnCours] = useState(false);
-  const [erreur, setErreur] = useState<string | null>(null);
+  const [agrandi, setAgrandi] = useState(false);
+  const champ = useRef<HTMLInputElement>(null);
+  const enCours = audit?.statut === "en-cours";
 
-  async function lancer(e: React.FormEvent) {
+  // « Auditer » depuis le compte : l'adresse arrive pré-remplie (?site=…).
+  useEffect(() => {
+    const site = new URLSearchParams(location.search).get("site");
+    if (site) setUrl(site);
+  }, []);
+
+  useEffect(() => {
+    if (!agrandi) return;
+    const echap = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setAgrandi(false);
+      champ.current?.blur();
+    };
+    window.addEventListener("keydown", echap);
+    return () => window.removeEventListener("keydown", echap);
+  }, [agrandi]);
+
+  function lancer(e: React.FormEvent) {
     e.preventDefault();
-    if (!url.trim()) return;
-    setEnCours(true);
-    setErreur(null);
-    setEtapes(["Connexion au site"]);
-    try {
-      const reponse = await fetch("/api/audit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ url }) });
-      if (!reponse.body) throw new Error("Réponse vide du serveur.");
-      const lecteur = reponse.body.pipeThrough(new TextDecoderStream()).getReader();
-      let tampon = "";
-      for (;;) {
-        const { value, done } = await lecteur.read();
-        if (done) break;
-        tampon += value;
-        const lignes = tampon.split("\n");
-        tampon = lignes.pop() ?? "";
-        for (const ligne of lignes.filter(Boolean)) {
-          const ev = JSON.parse(ligne) as Evenement;
-          if (ev.type === "etape") setEtapes((x) => [...x, ev.message]);
-          if (ev.type === "erreur") throw new Error(ev.message);
-          if (ev.type === "fin") {
-            setEtapes((x) => [...x, "Rapport prêt"]);
-            router.push(`/audit/${ev.id}`);
-            return;
-          }
-        }
-      }
-      throw new Error("L'audit s'est interrompu.");
-    } catch (err) {
-      setErreur((err as Error).message);
-      setEnCours(false);
-    }
+    if (!url.trim()) return champ.current?.focus();
+    setAgrandi(false);
+    champ.current?.blur();
+    audit?.lancer(url);
   }
 
   return (
     <>
-      <form className="formulaire-url" onSubmit={lancer} role="search" aria-label="Auditer un site">
-        <label htmlFor="url" className="sr-only" style={{ position: "absolute", left: -9999 }}>
-          Adresse du site
-        </label>
-        <input id="url" type="text" inputMode="url" autoComplete="url" placeholder="votre-site.fr" value={url} onChange={(e) => setUrl(e.target.value)} disabled={enCours} />
-        <button className="bouton bouton-phare" disabled={enCours}>
-          {enCours ? "Audit en cours…" : "Auditer mon site"}
-        </button>
-      </form>
-      {enCours && (
-        <div className="progression" aria-live="polite">
-          <ol>
-            {etapes.slice(-6).map((e, i) => (
-              <li key={i}>{e.length > 90 ? e.slice(0, 87) + "…" : e}</li>
-            ))}
-          </ol>
+      {agrandi && <div className="voile-saisie" aria-hidden="true" onMouseDown={() => setAgrandi(false)} />}
+      <div className={`saisie-audit${agrandi ? " agrandi" : ""}`}>
+        <form className="formulaire-url" onSubmit={lancer} role="search" aria-label="Auditer un site">
+          <label htmlFor="url" className="sr-only" style={{ position: "absolute", left: -9999 }}>
+            Adresse du site
+          </label>
+          <svg className="formulaire-loupe" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" />
+            <path d="m20 20-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+          <input
+            ref={champ}
+            id="url"
+            type="text"
+            inputMode="url"
+            autoComplete="url"
+            placeholder={agrandi ? "ma-boutique.fr" : "votre-site.fr"}
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onFocus={() => setAgrandi(true)}
+            disabled={enCours}
+          />
+          <button className="bouton bouton-phare" disabled={enCours}>
+            {enCours ? "Audit en cours…" : "Auditer mon site"}
+          </button>
+        </form>
+        <div className="saisie-aide" aria-hidden={!agrandi}>
+          <span>⏱ 1 à 2 minutes</span>
+          <span>Gratuit, sans inscription</span>
+          <span>Rien n&apos;est modifié sur votre site</span>
+          <span className="saisie-touche">
+            <kbd>Entrée</kbd> pour lancer · <kbd>Échap</kbd> pour fermer
+          </span>
         </div>
-      )}
-      {erreur && <p className="erreur" role="alert">{erreur}</p>}
+      </div>
     </>
   );
 }

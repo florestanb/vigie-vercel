@@ -1,4 +1,5 @@
 import type { DocumentCible } from "../types";
+import { MODELE_DECLARATION_ACCESSIBILITE, MODELE_FORMULAIRE_RETRACTATION, MODELE_INFORMATION_RETRACTATION, MODELE_MENTION_FORMULAIRE, type Modele } from "./modeles";
 
 export type TypeDocument = Exclude<DocumentCible, "interface" | "interne">;
 
@@ -11,6 +12,8 @@ export interface PlanDocument {
   questions: { cle: string; libelle: string; aide?: string }[];
   /** Mots ou motifs qui doivent figurer dans le document produit (contrôle après rédaction). */
   controles: { libelle: string; motif: RegExp }[];
+  /** Modèles officiels sur lesquels s'appuyer : tout le document, ou la section nommée. */
+  modeles?: (Modele & { section?: string })[];
 }
 
 export const PLANS: Record<TypeDocument, PlanDocument> = {
@@ -50,7 +53,9 @@ export const PLANS: Record<TypeDocument, PlanDocument> = {
       "Cookies et traceurs (renvoi vers la politique cookies)",
       "Sécurité",
       "Mises à jour de cette politique",
+      "Annexe : mention courte à placer sous chaque formulaire",
     ],
+    modeles: [{ ...MODELE_MENTION_FORMULAIRE, section: "Annexe : mention courte à placer sous chaque formulaire" }],
     questions: [
       { cle: "contactRgpd", libelle: "Adresse pour exercer ses droits", aide: "E-mail ou adresse postale" },
       { cle: "dpo", libelle: "Délégué à la protection des données (si désigné)" },
@@ -114,6 +119,12 @@ export const PLANS: Record<TypeDocument, PlanDocument> = {
       { libelle: "Garantie légale de conformité", motif: /garantie l[ée]gale de conformit[ée]/i },
       { libelle: "Vices cachés", motif: /vices? cach[ée]s?/i },
       { libelle: "Médiateur", motif: /m[ée]diat/i },
+      { libelle: "Avis officiel de rétractation (R221-3)", motif: /sans donner de motif dans un délai de quatorze jours/ },
+      { libelle: "Modèle officiel de formulaire (R221-1)", motif: /vous notifie\/notifions \(\*\) par la présente/ },
+      { libelle: "Instructions du modèle retirées", motif: /^(?![\s\S]*Instructions à suivre pour remplir)/ },
+    ],
+    modeles: [{ ...MODELE_INFORMATION_RETRACTATION, section: "Droit de rétractation (délai, fonctionnalité de rétractation en ligne, exceptions, formulaire type en annexe)" },
+      { ...MODELE_FORMULAIRE_RETRACTATION, section: "Annexe : formulaire de rétractation" },
     ],
   },
   cgu: {
@@ -146,7 +157,7 @@ export const PLANS: Record<TypeDocument, PlanDocument> = {
   accessibilite: {
     titre: "Déclaration d'accessibilité",
     description: "État de conformité au RGAA, contenus non accessibles et voies de recours.",
-    sections: ["État de conformité", "Résultats des tests", "Contenus non accessibles", "Établissement de cette déclaration", "Retour d'information et contact", "Voies de recours"],
+    sections: ["Engagement d'accessibilité (sans titre)", "État de conformité", "Résultat des tests", "Contenus non accessibles", "Établissement de cette déclaration d'accessibilité", "Retour d'information et contact", "Voies de recours"],
     questions: [
       { cle: "etat", libelle: "État de conformité", aide: "Non, partiellement ou totalement conforme (selon audit RGAA)" },
       { cle: "dateAudit", libelle: "Date de l'audit" },
@@ -154,7 +165,9 @@ export const PLANS: Record<TypeDocument, PlanDocument> = {
     controles: [
       { libelle: "État de conformité", motif: /conforme/i },
       { libelle: "Voies de recours", motif: /d[ée]fenseur des droits|recours/i },
+      { libelle: "Format officiel DINUM", motif: /Libre réponse 71120/ },
     ],
+    modeles: [MODELE_DECLARATION_ACCESSIBILITE],
   },
 };
 

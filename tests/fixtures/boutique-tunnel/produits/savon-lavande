@@ -1,0 +1,4 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Savon lavande</title></head><body>
+<h1>Savon lavande</h1><p class="price"><del>9,90 €</del> <strong>6,50 €</strong></p>
+<button onclick="localStorage.panier='savon-lavande'; this.textContent='Ajouté'">Ajouter au panier</button>
+</body></html>

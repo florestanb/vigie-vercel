@@ -6,7 +6,10 @@ export interface ServiceTiers {
   service: string;
   categorie: "analytics" | "publicite" | "reseau-social" | "video" | "carte" | "polices" | "cmp" | "chat" | "paiement" | "cdn" | "autre";
   domaines: string[];
+  /** Noms propres au service : reconnus quel que soit le domaine (cookies « première partie » comme _ga). */
   cookies?: RegExp[];
+  /** Noms trop génériques (test_cookie, fr…) : reconnus seulement s'ils viennent d'un domaine du service. */
+  cookiesDuDomaine?: RegExp[];
   exempte?: boolean;
   horsUE?: boolean;
 }
@@ -14,18 +17,18 @@ export interface ServiceTiers {
 export const SERVICES: ServiceTiers[] = [
   { service: "Google Analytics", categorie: "analytics", domaines: ["google-analytics.com", "analytics.google.com"], cookies: [/^_ga/, /^_gid$/, /^_gat/], horsUE: true },
   { service: "Google Tag Manager", categorie: "analytics", domaines: ["googletagmanager.com"], horsUE: true },
-  { service: "Google Ads / DoubleClick", categorie: "publicite", domaines: ["doubleclick.net", "googleadservices.com", "googlesyndication.com", "adservice.google.com"], cookies: [/^_gcl_/, /^IDE$/, /^test_cookie$/], horsUE: true },
-  { service: "Meta Pixel", categorie: "publicite", domaines: ["connect.facebook.net", "facebook.com/tr", "facebook.net"], cookies: [/^_fbp$/, /^_fbc$/, /^fr$/], horsUE: true },
+  { service: "Google Ads / DoubleClick", categorie: "publicite", domaines: ["doubleclick.net", "googleadservices.com", "googlesyndication.com", "adservice.google.com"], cookies: [/^_gcl_/], cookiesDuDomaine: [/^IDE$/, /^test_cookie$/], horsUE: true },
+  { service: "Meta Pixel", categorie: "publicite", domaines: ["connect.facebook.net", "facebook.com/tr", "facebook.net"], cookies: [/^_fbp$/, /^_fbc$/], cookiesDuDomaine: [/^fr$/], horsUE: true },
   { service: "TikTok Pixel", categorie: "publicite", domaines: ["analytics.tiktok.com"], cookies: [/^_ttp$/, /^_tt_/], horsUE: true },
-  { service: "LinkedIn Insight", categorie: "publicite", domaines: ["snap.licdn.com", "px.ads.linkedin.com"], cookies: [/^li_/, /^bcookie$/, /^lidc$/], horsUE: true },
+  { service: "LinkedIn Insight", categorie: "publicite", domaines: ["snap.licdn.com", "px.ads.linkedin.com"], cookies: [/^li_(sugr|fat_id|gc)$/], cookiesDuDomaine: [/^li_/, /^bcookie$/, /^lidc$/], horsUE: true },
   { service: "Pinterest Tag", categorie: "publicite", domaines: ["ct.pinterest.com", "s.pinimg.com"], cookies: [/^_pin_unauth$/, /^_pinterest/], horsUE: true },
   { service: "Snapchat Pixel", categorie: "publicite", domaines: ["sc-static.net", "tr.snapchat.com"], horsUE: true },
   { service: "X (Twitter) Pixel", categorie: "publicite", domaines: ["static.ads-twitter.com", "analytics.twitter.com", "t.co"], horsUE: true },
-  { service: "Microsoft Advertising / Bing", categorie: "publicite", domaines: ["bat.bing.com"], cookies: [/^_uet/, /^MUID$/], horsUE: true },
+  { service: "Microsoft Advertising / Bing", categorie: "publicite", domaines: ["bat.bing.com"], cookies: [/^_uet/], cookiesDuDomaine: [/^MUID$/], horsUE: true },
   { service: "Criteo", categorie: "publicite", domaines: ["criteo.com", "criteo.net"], cookies: [/^cto_/] },
   { service: "Taboola", categorie: "publicite", domaines: ["taboola.com"], horsUE: true },
   { service: "Outbrain", categorie: "publicite", domaines: ["outbrain.com"], horsUE: true },
-  { service: "Microsoft Clarity", categorie: "analytics", domaines: ["clarity.ms"], cookies: [/^_clck$/, /^_clsk$/, /^CLID$/], horsUE: true },
+  { service: "Microsoft Clarity", categorie: "analytics", domaines: ["clarity.ms"], cookies: [/^_clck$/, /^_clsk$/], cookiesDuDomaine: [/^CLID$/], horsUE: true },
   { service: "Hotjar", categorie: "analytics", domaines: ["hotjar.com", "hotjar.io"], cookies: [/^_hj/] },
   { service: "Contentsquare", categorie: "analytics", domaines: ["contentsquare.net"], cookies: [/^_cs_/] },
   { service: "Mixpanel", categorie: "analytics", domaines: ["mixpanel.com"], horsUE: true },
@@ -39,7 +42,7 @@ export const SERVICES: ServiceTiers[] = [
   { service: "Fathom", categorie: "analytics", domaines: ["usefathom.com"], exempte: true },
   { service: "Abla / Eulerian", categorie: "analytics", domaines: ["eulerian.net"], exempte: true },
   { service: "YouTube", categorie: "video", domaines: ["youtube.com", "youtube-nocookie.com", "ytimg.com", "googlevideo.com"], cookies: [/^VISITOR_INFO/, /^YSC$/], horsUE: true },
-  { service: "Vimeo", categorie: "video", domaines: ["vimeo.com", "vimeocdn.com"], cookies: [/^vuid$/], horsUE: true },
+  { service: "Vimeo", categorie: "video", domaines: ["vimeo.com", "vimeocdn.com"], cookiesDuDomaine: [/^vuid$/], horsUE: true },
   { service: "Google Maps", categorie: "carte", domaines: ["maps.googleapis.com", "maps.google.com", "maps.gstatic.com"], horsUE: true },
   { service: "Google Fonts", categorie: "polices", domaines: ["fonts.googleapis.com", "fonts.gstatic.com"], horsUE: true },
   { service: "Adobe Fonts", categorie: "polices", domaines: ["use.typekit.net", "p.typekit.net"], horsUE: true },
@@ -86,6 +89,7 @@ export const CMP_SIGNATURES: { nom: string; motifs: RegExp[] }[] = [
   { nom: "Osano", motifs: [/osano/i] },
   { nom: "Quantcast Choice", motifs: [/qc-cmp/i] },
   { nom: "TrustArc", motifs: [/trustarc|truste/i] },
+  { nom: "Squarespace", motifs: [/sqs-cookie-banner|gdpr-cookie-banner/i] },
 ];
 
 // Cookies techniques courants qui ne nécessitent pas de consentement.
@@ -102,8 +106,15 @@ export function identifierDomaine(host: string, chemin = ""): ServiceTiers | und
   return SERVICES.find((s) => s.domaines.some((d) => (d.includes("/") ? cible.includes(d) : host === d || host.endsWith("." + d))));
 }
 
-export function identifierCookie(nom: string): ServiceTiers | undefined {
-  return SERVICES.find((s) => s.cookies?.some((re) => re.test(nom)));
+export function identifierCookie(nom: string, domaine = ""): ServiceTiers | undefined {
+  // On compare les domaines principaux : un cookie de .linkedin.com vient bien de px.ads.linkedin.com.
+  const racine = (h: string) => h.replace(/^\./, "").toLowerCase().split("/")[0].split(".").slice(-2).join(".");
+  const d = racine(domaine);
+  const duService = (s: ServiceTiers) => !!d && s.domaines.some((x) => racine(x) === d);
+  return (
+    SERVICES.find((s) => s.cookies?.some((re) => re.test(nom))) ??
+    SERVICES.find((s) => s.cookiesDuDomaine?.some((re) => re.test(nom)) && duService(s))
+  );
 }
 
 export function estCookieTechnique(nom: string): boolean {
