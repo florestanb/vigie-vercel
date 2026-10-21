@@ -1,5 +1,4 @@
-import { chromium } from "playwright-core";
-import { cheminChromium } from "./crawler/crawler";
+import { lancerNavigateur } from "./navigateur";
 import type { Marque } from "./comptes";
 import type { Point } from "./historique";
 import { calculerScore, evaluer, trier, verdict, enAttenteDeValidation } from "./rules/engine";
@@ -131,7 +130,7 @@ export async function rapportPdf(audit: Audit, options: OptionsRapport = {}): Pr
 
 /** Imprime un document HTML autonome dans un Chromium hors ligne et sans JavaScript. */
 export async function imprimer(html: string, pied: string): Promise<Buffer> {
-  const navigateur = await chromium.launch({ executablePath: cheminChromium(), headless: true, args: ["--no-sandbox"] });
+  const navigateur = await lancerNavigateur();
   try {
     const contexte = await navigateur.newContext({ javaScriptEnabled: false, offline: true });
     const page = await contexte.newPage();

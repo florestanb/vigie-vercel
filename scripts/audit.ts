@@ -2,8 +2,9 @@
 import { lancerAudit } from "../src/lib/audit";
 import { calculerScore, evaluer, trier, verdict } from "../src/lib/rules/engine";
 import { restreindreDroits } from "../src/lib/donnees";
+import { fermerStockage, stockageEnBase } from "../src/lib/stockage";
 
-restreindreDroits();
+if (!stockageEnBase()) restreindreDroits();
 
 const url = process.argv[2];
 if (!url) {
@@ -17,4 +18,5 @@ console.log(`\n${audit.url} : ${score.note}/100 (${score.illegaux} illégaux don
 for (const r of resultats.filter((r) => !["conforme", "a-verifier"].includes(verdict(r)))) {
   console.log(`[${verdict(r)}] ${r.regle.titre} (${r.regle.gravite})${r.preuve ? `\n    ${r.preuve}` : ""}`);
 }
-console.log(`\nRapport complet : data/audits/${audit.id}.json`);
+console.log(`\nRapport complet : ${stockageEnBase() ? "base de données" : "data"}/audits/${audit.id}.json`);
+await fermerStockage();

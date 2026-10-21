@@ -1,15 +1,13 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { chargerAudit, lireCaptures, type Approbation } from "./audit";
+import { chargerAudit, lireCaptures, lireFichierAudit, type Approbation } from "./audit";
 import type { Marque } from "./comptes";
-import { DOSSIER_AUDITS, RACINE_DONNEES } from "./donnees";
 import { PLANS, type TypeDocument } from "./documents/plans";
 import type { DocumentHeberge } from "./documents-heberges";
 import { historique } from "./historique";
 import { blocCaptures, imprimer } from "./pdf";
 import { DERNIERE_MISE_A_JOUR } from "./rules/catalogue";
 import { evaluer, trier, verdict } from "./rules/engine";
+import { lireTexte } from "./stockage";
 
 /**
  * Dossier de preuve d'un site : de quoi montrer, lors d'un contrôle de la CNIL ou de la DGCCRF, ou face à
@@ -22,12 +20,12 @@ const date = (iso: string) => new Date(iso).toLocaleString("fr-FR", { timeZone: 
 const titreDoc = (t: string) => PLANS[t as TypeDocument]?.titre ?? t;
 
 async function empreinteFichier(id: string): Promise<string | null> {
-  const contenu = await fs.readFile(path.join(DOSSIER_AUDITS, `${id}.json`)).catch(() => null);
+  const contenu = await lireFichierAudit(id);
   return contenu ? crypto.createHash("sha256").update(contenu).digest("hex") : null;
 }
 
 async function approbations(id: string): Promise<(Approbation & { audit: string })[]> {
-  const brut = await fs.readFile(path.join(RACINE_DONNEES, "approbations", `${id}.jsonl`), "utf8").catch(() => "");
+  const brut = (await lireTexte(`approbations/${id}.jsonl`).catch(() => null)) ?? "";
   return brut
     .split("\n")
     .filter(Boolean)

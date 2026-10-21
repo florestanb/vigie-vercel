@@ -13,6 +13,6 @@ export async function POST(req: Request) {
   if (!corps.type || !(corps.type in PLANS)) return Response.json({ erreur: "Type de document inconnu." }, { status: 400 });
   if (!(await accesAudit(audit)).documents) return Response.json({ erreur: "Accès réservé." }, { status: 402 });
   if (typeof corps.texte !== "string" || !corps.texte.trim() || corps.texte.length > 200_000) return Response.json({ erreur: "Texte invalide." }, { status: 400 });
-  if (!autoriser("approbation:" + ipDe(req), 60, 60 * 60_000)) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
+  if (!(await autoriser("approbation:" + ipDe(req), 60, 60 * 60_000))) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
   return Response.json(await enregistrerApprobation(audit.id, corps.type, corps.texte));
 }

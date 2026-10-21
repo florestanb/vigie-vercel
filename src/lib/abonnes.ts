@@ -1,6 +1,5 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import { DOSSIER_COMPTES, abonnementActif, accesDomaine, chargerCompte, modifierCompte, offreAbonnement, type Compte, type Marque } from "./comptes";
+import { abonnementActif, accesDomaine, chargerCompte, listerComptes, modifierCompte, offreAbonnement, type Compte, type Marque } from "./comptes";
 import type { Offre } from "./offres";
 
 /**
@@ -63,9 +62,8 @@ export async function compteParCleApi(req: Request): Promise<Compte | null> {
   const cle = req.headers.get("authorization")?.match(/^Bearer\s+(vg_[\w-]{20,60})$/)?.[1];
   if (!cle) return null;
   const e = empreinteCle(cle);
-  for (const f of await fs.readdir(DOSSIER_COMPTES).catch(() => [] as string[])) {
-    if (!/^[a-f0-9]{24}\.json$/.test(f)) continue;
-    const c = await chargerCompte(f.slice(0, 24));
+  for (const id of await listerComptes()) {
+    const c = await chargerCompte(id);
     const attendu = c?.api?.empreinte;
     if (attendu && crypto.timingSafeEqual(Buffer.from(attendu), Buffer.from(e))) return formule(c)?.api ? c : null;
   }

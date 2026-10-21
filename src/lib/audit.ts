@@ -1,8 +1,5 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
 import { crawler } from "./crawler/crawler";
-import { DOSSIER_AUDITS, RACINE_DONNEES } from "./donnees";
 import { EDITEUR } from "./editeur";
 import { rechercherEntreprise } from "./entreprise";
 import { desindexer, indexerAudit } from "./historique";
@@ -11,10 +8,11 @@ import { iaDisponible, messageErreurIA } from "./ia/client";
 import { profilDepuisCrawl } from "./profil";
 import { CATALOGUE } from "./rules/catalogue";
 import { executerChecks } from "./rules/checks";
+import { ajouterLigne, ecrire, lire, lireTexte, lister, supprimer, supprimerDossier } from "./stockage";
 import type { Audit } from "./types";
 
 const CHECKS = [...new Set(CATALOGUE.map((r) => r.check).filter(Boolean) as string[])];
-const DOSSIER = DOSSIER_AUDITS;
+const cleAudit = (id: string) => `audits/${id}.json`;
 
 export interface OptionsAudit {
   /** false : audit automatique seul, sans lecture des textes par Claude (plus rapide, sans coût d'API). */
@@ -63,19 +61,14 @@ export async function lancerAudit(url: string, onEtape: (m: string) => void = ()
   return audit;
 }
 
-/** Captures d'écran d'un audit, gardées à côté de lui (data/captures/<audit>/<nom>.jpg) et supprimées avec lui. */
-export const DOSSIER_CAPTURES = path.join(RACINE_DONNEES, "captures");
-
+/** Captures d'écran d'un audit, gardées à côté de lui (captures/<audit>/<nom>.jpg) et supprimées avec lui. */
 async function enregistrerCaptures(auditId: string, captures: Record<string, Buffer>): Promise<void> {
-  if (!Object.keys(captures).length) return;
-  const dossier = path.join(DOSSIER_CAPTURES, auditId);
-  await fs.mkdir(dossier, { recursive: true });
-  for (const [nom, image] of Object.entries(captures)) await fs.writeFile(path.join(dossier, `${nom}.jpg`), image);
+  for (const [nom, image] of Object.entries(captures)) await ecrire(`captures/${auditId}/${nom}.jpg`, image);
 }
 
 export async function lireCapture(auditId: string, nom: string): Promise<Buffer | null> {
   if (!/^[\w-]{6,40}$/.test(auditId) || !/^[a-z-]{2,30}$/.test(nom)) return null;
-  return fs.readFile(path.join(DOSSIER_CAPTURES, auditId, `${nom}.jpg`)).catch(() => null);
+  return lire(`captures/${auditId}/${nom}.jpg`).catch(() => null);
 }
 
 /** Toutes les captures d'un audit, par nom. */
@@ -110,10 +103,8 @@ export async function approfondirAudit(id: string): Promise<Audit | null> {
 }
 
 export async function enregistrer(audit: Audit): Promise<void> {
-  await fs.mkdir(DOSSIER, { recursive: true });
-  await fs.writeFile(path.join(DOSSIER, `${audit.id}.json`), JSON.stringify(audit));
+  await ecrire(cleAudit(audit.id), JSON.stringify(audit));
   await indexerAudit(audit).catch(() => {});
-  purger().catch(() => {});
 }
 
 export interface Approbation {
@@ -136,24 +127,23 @@ export async function enregistrerApprobation(auditId: string, type: string, text
     empreinte: crypto.createHash("sha256").update(texte, "utf8").digest("hex"),
     caracteres: texte.length,
   };
-  const dossier = path.join(RACINE_DONNEES, "approbations");
-  await fs.mkdir(dossier, { recursive: true });
-  await fs.appendFile(path.join(dossier, `${auditId}.jsonl`), JSON.stringify(approbation) + "\n");
+  await ajouterLigne(`approbations/${auditId}.jsonl`, JSON.stringify(approbation));
   return approbation;
 }
 
-/** Supprime les audits plus anciens que la durée de conservation annoncée dans la politique de confidentialité. */
+/**
+ * Supprime les audits plus anciens que la durée de conservation annoncée dans la politique de confidentialité.
+ * Appelée par la tournée quotidienne (et non plus à chaque audit : lister tous les audits coûte une requête).
+ */
 export async function purger(): Promise<number> {
   const limite = Date.now() - EDITEUR.conservationAuditsMois * 30.44 * 86_400_000;
   const supprimes: string[] = [];
-  for (const f of await fs.readdir(DOSSIER)) {
-    if (!f.endsWith(".json")) continue;
-    const chemin = path.join(DOSSIER, f);
-    if ((await fs.stat(chemin)).mtimeMs < limite) {
-      await fs.unlink(chemin);
-      await fs.rm(path.join(DOSSIER_CAPTURES, f.slice(0, -5)), { recursive: true, force: true });
-      supprimes.push(f.slice(0, -5));
-    }
+  for (const { cle, modifie } of await lister("audits/")) {
+    const id = cle.match(/^audits\/([\w-]+)\.json$/)?.[1];
+    if (!id || modifie.getTime() >= limite) continue;
+    await supprimer(cle);
+    await supprimerDossier(`captures/${id}`);
+    supprimes.push(id);
   }
   await desindexer(supprimes).catch(() => {});
   return supprimes.length;
@@ -162,7 +152,8 @@ export async function purger(): Promise<number> {
 export async function chargerAudit(id: string): Promise<Audit | null> {
   if (!/^[\w-]{6,40}$/.test(id)) return null;
   try {
-    return actualiser(JSON.parse(await fs.readFile(path.join(DOSSIER, `${id}.json`), "utf8")) as Audit);
+    const texte = await lireTexte(cleAudit(id));
+    return texte ? actualiser(JSON.parse(texte) as Audit) : null;
   } catch {
     return null;
   }
@@ -181,4 +172,9 @@ function actualiser(audit: Audit): Audit {
     profilDetecte,
     profil: profilAffine ? audit.profil : profilDetecte,
   };
+}
+
+/** Fichier d'audit tel qu'il est conservé (pour en calculer l'empreinte dans le dossier de preuve). */
+export async function lireFichierAudit(id: string): Promise<Buffer | null> {
+  return /^[\w-]{6,40}$/.test(id) ? lire(cleAudit(id)).catch(() => null) : null;
 }

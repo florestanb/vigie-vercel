@@ -13,7 +13,7 @@ export const EDITEUR = {
   email: "[À COMPLÉTER : adresse e-mail de contact]",
   telephone: "[À COMPLÉTER : numéro de téléphone]",
   directeurPublication: "[À COMPLÉTER : prénom et nom du représentant légal]",
-  hebergeur: "[À COMPLÉTER : hébergeur, ex. OVH SAS, 2 rue Kellermann, 59100 Roubaix, France]",
+  hebergeur: "[À COMPLÉTER : hébergeur, ici Vercel Inc. et son adresse postale (voir vercel.com/legal)]",
   hebergeurTelephone: "[À COMPLÉTER : téléphone de l'hébergeur]",
   /** Tribunal compétent pour les litiges entre professionnels. */
   tribunal: "[À COMPLÉTER : tribunal des activités économiques de la ville du siège]",

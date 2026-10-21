@@ -1,7 +1,5 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { DOSSIER_AUDITS, RACINE_DONNEES } from "./donnees";
 import { calculerScore, evaluer } from "./rules/engine";
+import { avecVerrou, ecrire, lister, lireTexte } from "./stockage";
 import type { Audit } from "./types";
 
 /**
@@ -17,7 +15,7 @@ export interface Point {
   flous: number;
 }
 
-const FICHIER = path.join(RACINE_DONNEES, "index-audits.json");
+const FICHIER = "index-audits.json";
 type Index = Record<string, Point[]>;
 
 const domaine = (url: string) => new URL(url).hostname.replace(/^www\./, "").toLowerCase();
@@ -29,14 +27,12 @@ export function pointDe(audit: Audit): Point {
 
 let ecriture: Promise<unknown> = Promise.resolve();
 
-/** Toutes les modifications passent l'une après l'autre (un seul processus serveur). */
+/** Toutes les modifications passent l'une après l'autre, y compris entre instances du serveur. */
 function modifier(f: (i: Index) => void): Promise<void> {
-  const suite = ecriture.catch(() => {}).then(async () => {
+  const suite = avecVerrou("index-audits", async () => {
     const index = await lire();
     f(index);
-    await fs.mkdir(RACINE_DONNEES, { recursive: true });
-    await fs.writeFile(`${FICHIER}.tmp`, JSON.stringify(index));
-    await fs.rename(`${FICHIER}.tmp`, FICHIER);
+    await ecrire(FICHIER, JSON.stringify(index));
   });
   ecriture = suite;
   return suite;
@@ -44,19 +40,21 @@ function modifier(f: (i: Index) => void): Promise<void> {
 
 async function lire(): Promise<Index> {
   try {
-    return JSON.parse(await fs.readFile(FICHIER, "utf8")) as Index;
+    const texte = await lireTexte(FICHIER);
+    if (texte) return JSON.parse(texte) as Index;
   } catch {
-    return reconstruire();
+    /* illisible : reconstruit ci-dessous */
   }
+  return reconstruire();
 }
 
-/** Index absent ou illisible : on le refait à partir des audits présents sur le disque. */
+/** Index absent ou illisible : on le refait à partir des audits enregistrés. */
 async function reconstruire(): Promise<Index> {
   const index: Index = {};
-  for (const f of await fs.readdir(DOSSIER_AUDITS).catch(() => [] as string[])) {
-    if (!f.endsWith(".json")) continue;
+  for (const { cle } of await lister("audits/").catch(() => [])) {
+    if (!cle.endsWith(".json")) continue;
     try {
-      const a = JSON.parse(await fs.readFile(path.join(DOSSIER_AUDITS, f), "utf8")) as Audit;
+      const a = JSON.parse((await lireTexte(cle)) ?? "") as Audit;
       (index[domaine(a.url)] ??= []).push(pointDe(a));
     } catch {
       /* audit illisible : ignoré */

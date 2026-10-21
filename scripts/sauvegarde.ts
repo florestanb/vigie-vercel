@@ -1,15 +1,17 @@
-// Sauvegarde chiffrée de data/ : npm run sauvegarde
+// Sauvegarde chiffrée de toutes les données (data/, ou la base si DATABASE_URL est défini) : npm run sauvegarde
 // Restauration : npm run restaurer -- <fichier.vigie> [dossier de destination, par défaut ./data-restauree]
+// (puis, pour remettre ce dossier dans la base : npm run migrer -- <dossier>)
 import path from "node:path";
 import { restreindreDroits } from "../src/lib/donnees";
 import { creerSauvegarde, restaurerSauvegarde } from "../src/lib/sauvegarde";
+import { fermerStockage, stockageEnBase } from "../src/lib/stockage";
 
 try {
   process.loadEnvFile(".env.local");
 } catch {
   /* variables d'environnement seules */
 }
-restreindreDroits();
+if (!stockageEnBase()) restreindreDroits();
 
 const [mode, fichier, destination] = process.argv.slice(2);
 if (mode === "restaurer") {
@@ -24,3 +26,4 @@ if (mode === "restaurer") {
 } else {
   console.log(`Sauvegarde créée : ${await creerSauvegarde()}`);
 }
+await fermerStockage();

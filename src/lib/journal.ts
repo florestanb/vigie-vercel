@@ -1,7 +1,5 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { RACINE_DONNEES } from "./donnees";
 import { envoyerEmail } from "./email";
+import { ajouterLigne, ecrire, lire, lireJson, lireTexte, supprimer, taille } from "./stockage";
 
 /**
  * Journal des erreurs de production (paiement, webhook, e-mails, audits, suivi) : consultable dans
@@ -10,10 +8,10 @@ import { envoyerEmail } from "./email";
  * et le message d'erreur.
  */
 
-const DOSSIER = path.join(RACINE_DONNEES, "journal");
-const FICHIER = path.join(DOSSIER, "erreurs.jsonl");
+const FICHIER = "journal/erreurs.jsonl";
+/** Dernier e-mail d'alerte par type d'erreur : partagé entre les instances du serveur. */
+const ENVOIS = "journal/derniers-envois.json";
 const TAILLE_MAX = 2 * 1024 * 1024;
-const derniersEnvois = new Map<string, number>();
 
 export interface EntreeJournal {
   date: string;
@@ -27,17 +25,20 @@ export async function signalerErreur(contexte: string, e: unknown, details?: Rec
   console.error(`[${contexte}]`, e);
   const entree: EntreeJournal = { date: new Date().toISOString(), contexte, message, ...(details ? { details } : {}) };
   try {
-    await fs.mkdir(DOSSIER, { recursive: true });
-    const taille = await fs.stat(FICHIER).then((s) => s.size).catch(() => 0);
-    if (taille > TAILLE_MAX) await fs.rename(FICHIER, `${FICHIER}.1`);
-    await fs.appendFile(FICHIER, JSON.stringify(entree) + "\n");
+    if ((await taille(FICHIER)) > TAILLE_MAX) {
+      const ancien = await lire(FICHIER);
+      if (ancien) await ecrire(`${FICHIER}.1`, ancien);
+      await supprimer(FICHIER);
+    }
+    await ajouterLigne(FICHIER, JSON.stringify(entree));
   } catch {
     /* le journal ne doit jamais provoquer d'erreur à son tour */
   }
   const alerte = process.env.VIGIE_EMAIL_ALERTES?.trim();
-  const dernier = derniersEnvois.get(contexte) ?? 0;
+  const envois = await lireJson<Record<string, number>>(ENVOIS, {}).catch(() => ({}) as Record<string, number>);
+  const dernier = envois[contexte] ?? 0;
   if (alerte && Date.now() - dernier > 3600_000 && contexte !== "E-mail") {
-    derniersEnvois.set(contexte, Date.now());
+    await ecrire(ENVOIS, JSON.stringify({ ...envois, [contexte]: Date.now() })).catch(() => {});
     await envoyerEmail({
       a: alerte,
       objet: `[Vigie] Erreur : ${contexte}`,
@@ -47,7 +48,7 @@ export async function signalerErreur(contexte: string, e: unknown, details?: Rec
 }
 
 export async function lireErreurs(limite = 50): Promise<EntreeJournal[]> {
-  const texte = await fs.readFile(FICHIER, "utf8").catch(() => "");
+  const texte = (await lireTexte(FICHIER).catch(() => null)) ?? "";
   return texte
     .trim()
     .split("\n")

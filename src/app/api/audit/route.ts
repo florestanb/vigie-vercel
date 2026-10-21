@@ -26,7 +26,7 @@ export async function POST(req: Request) {
   (async () => {
     try {
       if (!url || typeof url !== "string" || url.length > 500) throw new Error("Indiquez l'adresse d'un site, par exemple votre-site.fr.");
-      if (!autoriser(ipDe(req), 6, 10 * 60_000)) throw new Error("Trop d'audits lancés depuis votre connexion. Réessayez dans quelques minutes.");
+      if (!(await autoriser(ipDe(req), 6, 10 * 60_000))) throw new Error("Trop d'audits lancés depuis votre connexion. Réessayez dans quelques minutes.");
       // Durée estimée, affichée au client dès le départ : la lecture par Claude ajoute environ une minute.
       await envoyer({ type: "debut", estimation: ia ? 150 : 90, ia });
       const audit = await lancerAudit(url, (message) => envoyer({ type: "etape", message }), { ia });

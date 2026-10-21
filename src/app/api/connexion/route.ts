@@ -11,7 +11,7 @@ export const runtime = "nodejs";
 export async function POST(req: Request) {
   const { email } = (await req.json().catch(() => ({}))) as { email?: string };
   if (typeof email !== "string" || !emailValide(email)) return Response.json({ erreur: "Adresse e-mail invalide." }, { status: 400 });
-  if (!autoriser("connexion-client:" + ipDe(req), 5, 15 * 60_000) || !autoriser("connexion-email:" + normaliserEmail(email), 3, 15 * 60_000))
+  if (!(await autoriser("connexion-client:" + ipDe(req), 5, 15 * 60_000)) || !(await autoriser("connexion-email:" + normaliserEmail(email), 3, 15 * 60_000)))
     return Response.json({ erreur: "Trop de demandes. Réessayez dans quelques minutes." }, { status: 429 });
   const lien = `${origineDe(req)}/api/connexion/lien?jeton=${await creerJetonConnexion(normaliserEmail(email))}`;
   try {

@@ -1,10 +1,9 @@
-import fs from "node:fs/promises";
-import { DOSSIER_COMPTES, abonnementActif, chargerCompte, offreAbonnement, type Compte } from "./comptes";
+import { abonnementActif, chargerCompte, listerComptes, offreAbonnement, type Compte } from "./comptes";
 import { tousLesSites } from "./historique";
 import { ABONNEMENTS, OFFRES, offreDe } from "./offres";
 import { listerCampagnes } from "./prospection/campagne";
 
-/** Chiffres de pilotage : audits, ventes, conversion, prospection. Calculés à la demande depuis les fichiers. */
+/** Chiffres de pilotage : audits, ventes, conversion, prospection. Calculés à la demande depuis les données enregistrées. */
 export interface Statistiques {
   periodeJours: number;
   audits: { total: number; periode: number; sites: number };
@@ -25,9 +24,8 @@ export async function calculerStatistiques(periodeJours = 30): Promise<Statistiq
   const points = Object.values(index).flat();
 
   const comptes: Compte[] = [];
-  for (const f of await fs.readdir(DOSSIER_COMPTES).catch(() => [] as string[])) {
-    if (!/^[a-f0-9]{24}\.json$/.test(f)) continue;
-    const c = await chargerCompte(f.slice(0, 24));
+  for (const id of await listerComptes()) {
+    const c = await chargerCompte(id);
     if (c) comptes.push(c);
   }
 

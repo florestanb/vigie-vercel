@@ -1,6 +1,6 @@
-import fs from "node:fs/promises";
 import { estAdmin, nonAutorise } from "@/lib/admin";
 import { cheminMail } from "@/lib/prospection/campagne";
+import { lire } from "@/lib/stockage";
 
 export const runtime = "nodejs";
 type Params = { params: Promise<{ id: string; fichier: string }> };
@@ -18,8 +18,9 @@ export async function GET(req: Request, { params }: Params) {
   const format = (new URL(req.url).searchParams.get("format") ?? "html") as keyof typeof TYPES;
   if (!(format in TYPES)) return new Response("Format inconnu.", { status: 400 });
   try {
-    const contenu = await fs.readFile(cheminMail(id, fichier, format));
-    return new Response(contenu, {
+    const contenu = await lire(cheminMail(id, fichier, format));
+    if (!contenu) throw new Error("introuvable");
+    return new Response(new Uint8Array(contenu), {
       headers: {
         "content-type": TYPES[format],
         "cache-control": "no-store",

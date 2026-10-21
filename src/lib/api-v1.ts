@@ -12,7 +12,7 @@ import type { Compte } from "./comptes";
 export async function authentifier(req: Request): Promise<Compte | Response> {
   const compte = await compteParCleApi(req);
   if (!compte) return Response.json({ erreur: "Clé d'API absente, invalide ou révoquée." }, { status: 401 });
-  if (!autoriser("api:" + compte.id, 120, 60 * 60_000)) return Response.json({ erreur: "Limite de 120 requêtes par heure atteinte." }, { status: 429 });
+  if (!(await autoriser("api:" + compte.id, 120, 60 * 60_000))) return Response.json({ erreur: "Limite de 120 requêtes par heure atteinte." }, { status: 429 });
   return compte;
 }
 

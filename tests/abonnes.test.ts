@@ -13,6 +13,7 @@ let abonnes: typeof import("../src/lib/abonnes");
 let heberges: typeof import("../src/lib/documents-heberges");
 let veille: typeof import("../src/lib/veille");
 let audit: typeof import("../src/lib/audit");
+let stockage: typeof import("../src/lib/stockage");
 
 const fin = () => new Date(Date.now() + 30 * 86_400_000).toISOString();
 
@@ -28,6 +29,7 @@ before(async () => {
   heberges = await import("../src/lib/documents-heberges");
   veille = await import("../src/lib/veille");
   audit = await import("../src/lib/audit");
+  stockage = await import("../src/lib/stockage");
 });
 
 test("seul un texte approuvé par le client peut être hébergé ; l'adresse reste fixe d'une version à l'autre", async () => {
@@ -68,7 +70,7 @@ test("une clé d'API authentifie son compte, n'est jamais stockée en clair, et 
   const agence = await abonne("api@exemple.fr", "agence");
   const cle = await abonnes.creerCleApi(agence.id);
   assert.match(cle, /^vg_[\w-]{30,}$/);
-  const stocke = fs.readFileSync(path.join(comptes.DOSSIER_COMPTES, `${agence.id}.json`), "utf8");
+  const stocke = (await stockage.lireTexte(`comptes/${agence.id}.json`))!;
   assert.ok(!stocke.includes(cle));
 
   const req = (k: string) => new Request("http://x/api/v1/sites", { headers: { authorization: `Bearer ${k}` } });
@@ -103,7 +105,7 @@ test("la veille détecte règles nouvelles, modifiées et entrées en applicatio
 
 test("le premier passage de veille enregistre l'état sans alerter personne", async () => {
   assert.deepEqual(await veille.passeDeVeille(), { changements: 0, alertes: 0 });
-  assert.ok(fs.existsSync(path.join(tmp, "veille", "registre.json")));
+  assert.ok(await stockage.lire("veille/registre.json"));
   assert.deepEqual(await veille.passeDeVeille(), { changements: 0, alertes: 0 });
 });
 

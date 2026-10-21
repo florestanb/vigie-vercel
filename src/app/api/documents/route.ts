@@ -17,7 +17,7 @@ export async function POST(req: Request) {
   if (!corps.type || !(corps.type in PLANS)) return new Response("Type de document inconnu.", { status: 400 });
   if (!(await accesAudit(audit)).documents) return new Response("La génération des documents fait partie de l'offre Mise en conformité.", { status: 402 });
   if (!iaDisponible()) return new Response("La rédaction nécessite une clé d'API Claude (ANTHROPIC_API_KEY) côté serveur.", { status: 503 });
-  if (!autoriser("doc:" + ipDe(req), 20, 60 * 60_000)) return new Response("Trop de documents demandés. Réessayez plus tard.", { status: 429 });
+  if (!(await autoriser("doc:" + ipDe(req), 20, 60 * 60_000))) return new Response("Trop de documents demandés. Réessayez plus tard.", { status: 429 });
 
   const reponses = Object.fromEntries(
     Object.entries(corps.reponses ?? {})

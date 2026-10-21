@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function POST(req: Request) {
   const compte = await compteConnecte();
   if (!compte) return Response.json({ erreur: "Connectez-vous d'abord." }, { status: 401 });
-  if (!autoriser("suivi:" + ipDe(req), 60, 60 * 60_000)) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
+  if (!(await autoriser("suivi:" + ipDe(req), 60, 60 * 60_000))) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
   const { site } = (await req.json().catch(() => ({}))) as { site?: string };
   try {
     await ajouterSiteSuivi(compte.id, String(site ?? ""));

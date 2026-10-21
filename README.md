@@ -160,6 +160,44 @@ La même campagne peut se lancer en ligne de commande : `npm run prospection -- 
 
 Les campagnes tournent dans le processus du serveur : il faut un serveur Node qui reste allumé (`npm start`, pas une plateforme « serverless »). Une campagne coupée par un redémarrage s'affiche « interrompue » et se reprend d'un clic.
 
+## Déploiement sur Vercel
+
+Cette version de Vigie est adaptée à Vercel, où aucun serveur ne reste allumé et où le disque n'est pas conservé :
+
+| Sur un serveur classique | Sur Vercel |
+|---|---|
+| Données dans `data/` | Table Postgres `vigie_donnees` (Neon), créée au premier usage (`src/lib/stockage.ts`) |
+| Chromium installé sur la machine | `@sparticuz/chromium`, embarqué dans les fonctions qui lancent un navigateur (`src/lib/navigateur.ts`) |
+| Tournée de suivi toutes les heures dans le processus | Tâche planifiée quotidienne `vercel.json` → `/api/cron` |
+| Audits de suivi et campagnes « en fond » dans le processus | Une exécution séparée par audit : `/api/interne/tache` répond aussitôt puis travaille (`after()`), et chaque étape d'une campagne lance la suivante (`src/lib/taches.ts`) |
+| Limites d'usage en mémoire | Limites en base, partagées par toutes les instances ; adresse du client lue dans `x-real-ip` |
+| Sauvegardes chiffrées quotidiennes sur disque | Sauvegardes de Neon (restauration à un instant donné) ; `npm run sauvegarde` exporte la base depuis votre machine |
+
+Sans `DATABASE_URL`, tout fonctionne comme avant, sur disque : `npm run dev` et `npm test` n'ont besoin d'aucune base.
+
+### Mise en ligne
+
+1. **Importer le dépôt** dans Vercel (Add New → Project). Le framework Next.js est détecté ; rien à changer dans les réglages de build.
+2. **Base de données** : onglet *Storage* du projet → *Create Database* → **Neon** (Postgres), région Francfort (`eu-central-1`), proche de la région des fonctions (`fra1`, dans `vercel.json`). Vercel ajoute `DATABASE_URL` aux variables du projet.
+3. **Variables d'environnement** (*Settings → Environment Variables*), d'après `.env.example` :
+   - obligatoires : `CRON_SECRET` et `VIGIE_SECRET` (32 caractères aléatoires chacun, par exemple `openssl rand -hex 32`), `VIGIE_URL_PUBLIQUE` (`https://votre-domaine.fr`), `ANTHROPIC_API_KEY` ;
+   - paiement et e-mails : `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `RESEND_API_KEY`, `VIGIE_EMAIL_EXPEDITEUR` ;
+   - espace privé et alertes : `VIGIE_ADMIN_MOTDEPASSE`, `VIGIE_EMAIL_ALERTES` ;
+   - à ne **pas** définir : `CHROMIUM_PATH`, `VIGIE_DONNEES`, `VIGIE_PROXY_DE_CONFIANCE`, `VIGIE_PAIEMENT_SIMULE`.
+4. **Déployer**, puis ouvrir `/statistiques` (espace privé) : la liste « Configuration » indique ce qui manque encore.
+5. **Webhook Stripe** : `https://votre-domaine.fr/api/paiement/webhook` (événements listés plus haut).
+6. **Données existantes** (facultatif) : depuis votre machine, avec la `DATABASE_URL` de Neon dans `.env.local`, `npm run migrer -- data` recopie le dossier `data/` d'une installation précédente dans la base.
+
+### Plan Vercel et limites
+
+- **Plan Pro conseillé** : les conditions du plan Hobby excluent l'usage commercial (Vigie encaisse des paiements). Le code reste compatible Hobby : les fonctions sont limitées à 300 secondes et la tâche planifiée ne tourne qu'une fois par jour.
+- **Un audit tient en 300 secondes** : le parcours du site est plafonné à 4 minutes, la lecture par Claude ajoute environ une minute. Un site très lent peut dépasser : l'audit échoue alors avec un message clair, et une étape de campagne interrompue est notée « erreur » avant de passer au site suivant.
+- **Suivi des sites** : la tournée quotidienne lance au plus 40 audits, chacun dans sa propre exécution. Sur le plan Pro, passez la planification de `vercel.json` à `0 * * * *` (toutes les heures) pour suivre davantage de sites.
+- **Campagnes de prospection** : la pause entre deux sites se fait par tranches de 30 secondes au plus. Une campagne dont la chaîne d'étapes s'est interrompue est relancée par la tournée suivante, ou tout de suite avec « Reprendre ».
+- **Aperçus protégés** : sur un déploiement d'aperçu protégé par Vercel Authentication, les tâches internes ont besoin de *Protection Bypass for Automation* (Settings → Deployment Protection), qui fournit `VERCEL_AUTOMATION_BYPASS_SECRET`. Le domaine de production n'est pas concerné.
+- **Navigateur distant** (facultatif) : `VIGIE_NAVIGATEUR_WS=wss://…` (Browserless ou équivalent) remplace le Chromium embarqué. Le proxy filtrant local n'est alors pas joignable : le filtrage contre la SSRF se fait requête par requête, moins complet.
+- **Mentions légales** : l'hébergeur à déclarer dans `src/lib/editeur.ts` est Vercel Inc. ; la politique de confidentialité doit mentionner Vercel et Neon comme sous-traitants (et les transferts hors de l'Union pour Vercel).
+
 ## Architecture
 
 ```
@@ -169,6 +207,7 @@ src/lib/ia/          analyse des textes et rédaction par Claude (sortie structu
 src/lib/documents/   plans des documents à rédiger et modèles officiels
 src/lib/prospection/ sélection des constats certains, mails de premier contact et campagnes
 src/lib/offres.ts    offres payantes ; comptes.ts, session.ts, paiement.ts (Stripe), acces.ts (rapport verrouillé), suivi.ts
+src/lib/stockage.ts  stockage des données : Postgres (DATABASE_URL) ou dossier data/ ; taches.ts : tâches longues ; navigateur.ts : Chromium
 src/lib/entreprise   vérification au répertoire Sirene (recherche-entreprises.api.gouv.fr)
 src/app/             interface Next.js : accueil, rapport, rédaction, registre
 tests/fixtures/      deux sites témoins : une boutique « risquée » et une boutique « soignée »
@@ -178,11 +217,12 @@ Le moteur est une fonction pure : `evaluer(profil, constatsAuto, constatsIA)`, e
 
 ## Sécurité
 
-- **Stockage** : tout est dans `data/` (ou le dossier parent de `VIGIE_DONNEES`), jamais servi par le site. Seules les routes qui contrôlent l'accès le lisent, et chaque nom de fichier est construit à partir d'un identifiant vérifié par motif (aucun chemin fourni par l'utilisateur). Au démarrage, Vigie se met en `umask 077` et remet `data/` en droits 700/600 : seul le compte système qui fait tourner Vigie peut lire ces fichiers. Lancez Vigie sous un utilisateur dédié, sans droits sur le reste du serveur.
+- **Stockage** : tout est dans la base Postgres (`DATABASE_URL`) ou, sans base, dans `data/` (ou le dossier parent de `VIGIE_DONNEES`), jamais servi par le site. Seules les routes qui contrôlent l'accès le lisent, et chaque nom de fichier est construit à partir d'un identifiant vérifié par motif (aucun chemin fourni par l'utilisateur). Au démarrage, Vigie se met en `umask 077` et remet `data/` en droits 700/600 : seul le compte système qui fait tourner Vigie peut lire ces fichiers. Lancez Vigie sous un utilisateur dédié, sans droits sur le reste du serveur.
 - **Rapport gratuit** : les constats verrouillés ne quittent jamais le serveur (vérifié par un test).
 - **SSRF** : tout le trafic du navigateur d'audit passe par un proxy filtrant local (`src/lib/crawler/proxy-filtrant.ts`) qui résout chaque nom, refuse les adresses privées, réservées ou de métadonnées cloud, puis se connecte à l'adresse vérifiée : redirections, WebSocket et « DNS rebinding » compris. Ports autorisés : 80, 443, 8080, 8443. Si `VIGIE_PROXY` impose un autre proxy, ce filtre est remplacé par un contrôle requête par requête, moins complet.
 - **Accès** : espace privé par mot de passe (12 caractères au moins, comparaison en temps constant, limite par adresse et limite globale de 30 essais par heure) ; sessions client par cookie httpOnly signé ; webhook Stripe à signature vérifiée.
-- **Limites d'usage** : 6 audits par 10 minutes, 20 générations par heure. L'adresse du client n'est lue dans `X-Forwarded-For` que derrière un proxy déclaré (`VIGIE_PROXY_DE_CONFIANCE=1`, dernière adresse de la chaîne) : sans cela, l'en-tête pourrait être falsifié.
+- **Tâches internes** : `/api/cron` et `/api/interne/tache` exigent `Authorization: Bearer $CRON_SECRET` (comparaison en temps constant).
+- **Limites d'usage** : 6 audits par 10 minutes, 20 générations par heure. Sur Vercel, l'adresse du client est lue dans `x-real-ip`, posé par Vercel. Ailleurs, elle n'est lue dans `X-Forwarded-For` que derrière un proxy déclaré (`VIGIE_PROXY_DE_CONFIANCE=1`, dernière adresse de la chaîne) : sans cela, l'en-tête pourrait être falsifié.
 - **En-têtes** : nosniff, `frame-ancestors 'self'`, `Referrer-Policy` (les adresses des rapports ne fuient pas vers les sites liés), HSTS en production, `no-store` et `noindex` sur l'API, le compte, l'espace privé et les rapports.
 - **Mode développement** : `npm run dev` n'écoute que sur 127.0.0.1 ; il joint aux pages des données de débogage et ne doit jamais être exposé.
 - Le Markdown produit par Claude est assaini (aucun HTML brut, liens http, https, mailto et internes uniquement).

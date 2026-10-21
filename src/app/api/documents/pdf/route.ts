@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   if (typeof corps.texte !== "string" || !corps.texte.trim() || corps.texte.length > 300_000) return new Response("Texte invalide.", { status: 400 });
   if (!(await accesAudit(audit)).documents) return new Response("Accès réservé.", { status: 402 });
   if (!(await estApprouve(audit.id, corps.type, corps.texte))) return new Response("Approuvez d'abord cette version du document.", { status: 409 });
-  if (!autoriser("doc-pdf:" + ipDe(req), 30, 60 * 60_000)) return new Response("Trop de demandes.", { status: 429 });
+  if (!(await autoriser("doc-pdf:" + ipDe(req), 30, 60 * 60_000))) return new Response("Trop de demandes.", { status: 429 });
 
   const titre = PLANS[corps.type as TypeDocument].titre;
   const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>${e(titre)}</title>

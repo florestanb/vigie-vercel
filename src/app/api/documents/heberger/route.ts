@@ -20,7 +20,7 @@ export async function POST(req: Request) {
   if (typeof corps.texte !== "string" || !corps.texte.trim() || corps.texte.length > 200_000) return Response.json({ erreur: "Texte invalide." }, { status: 400 });
   const domaine = domaineDe(audit.url);
   if (!peutHeberger(compte, domaine)) return Response.json({ erreur: "L'hébergement des documents fait partie des abonnements." }, { status: 402 });
-  if (!autoriser("heberger:" + ipDe(req), 60, 60 * 60_000)) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
+  if (!(await autoriser("heberger:" + ipDe(req), 60, 60 * 60_000))) return Response.json({ erreur: "Trop de demandes." }, { status: 429 });
   try {
     const d = await publierHeberge(compte.id, domaine, corps.type as TypeDocument, audit.id, corps.texte);
     return Response.json({ id: d.id, ...codesIntegration(origineDe(req), d) });

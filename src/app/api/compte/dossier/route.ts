@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domaine)) return new Response("Site invalide.", { status: 400 });
   const compte = await compteConnecte();
   if (!(await estAdmin()) && !accesDomaine(compte, domaine).complet) return new Response("Accès réservé.", { status: 402 });
-  if (!autoriser("dossier:" + ipDe(req), 20, 60 * 60_000)) return new Response("Trop de demandes.", { status: 429 });
+  if (!(await autoriser("dossier:" + ipDe(req), 20, 60 * 60_000))) return new Response("Trop de demandes.", { status: 429 });
   try {
     const documents = compte ? (await hebergesDuCompte(compte.id)).filter((d) => d.domaine === domaine) : [];
     const pdf = await dossierPdf(domaine, documents, marqueDe(compte));

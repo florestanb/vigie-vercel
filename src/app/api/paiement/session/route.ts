@@ -13,7 +13,7 @@ export async function POST(req: Request) {
   const corps = (await req.json().catch(() => ({}))) as { offre?: string; audit?: string; cgv?: boolean; email?: string };
   if (!corps.offre || !(corps.offre in OFFRES)) return Response.json({ erreur: "Offre inconnue." }, { status: 400 });
   if (corps.cgv !== true) return Response.json({ erreur: "Merci d'accepter les conditions générales de vente." }, { status: 400 });
-  if (!autoriser("paiement:" + ipDe(req), 20, 60 * 60_000)) return Response.json({ erreur: "Trop de tentatives. Réessayez plus tard." }, { status: 429 });
+  if (!(await autoriser("paiement:" + ipDe(req), 20, 60 * 60_000))) return Response.json({ erreur: "Trop de tentatives. Réessayez plus tard." }, { status: 429 });
   const offre = corps.offre as IdOffre;
   const audit = typeof corps.audit === "string" && /^[\w-]{6,40}$/.test(corps.audit) ? corps.audit : undefined;
   const compte = await compteConnecte();

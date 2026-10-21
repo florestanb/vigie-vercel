@@ -1,17 +1,18 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { RACINE_DONNEES } from "./donnees";
+import { avecVerrou, creerSiAbsent, ecrire, lireJson, lister } from "./stockage";
 import { OFFRES, offreDe, type IdAbonnement, type IdOffre } from "./offres";
 
 /**
  * Comptes clients, sans mot de passe : un compte = une adresse e-mail. Il est créé au premier paiement
  * (ou à la première connexion par lien) et porte les droits achetés.
  *
- * Stockage : un fichier JSON par compte dans data/comptes/. Les écritures d'un même compte sont sérialisées
- * dans ce processus (une seule instance de serveur).
+ * Stockage : un fichier JSON par compte (comptes/<id>.json). Les écritures d'un même compte sont sérialisées,
+ * y compris entre instances du serveur (verrou en base).
  */
 
+/** Dossier des comptes en mode fichiers (sans base de données). */
 export const DOSSIER_COMPTES = path.join(RACINE_DONNEES, "comptes");
 const JOUR = 86_400_000;
 
@@ -50,6 +51,8 @@ export interface SiteSuivi {
   url: string;
   ajoute: string;
   historique: { audit: string; date: string; note: number; illegaux: number }[];
+  /** Date du dernier lancement d'audit par la tournée (évite de relancer un audit encore en cours). */
+  lance?: string;
 }
 
 export interface Compte {
@@ -90,35 +93,31 @@ export const emailValide = (e: string) => /^[^\s@]{1,64}@[^\s@]{1,190}\.[a-z]{2,
 
 const fichier = (id: string) => {
   if (!/^[a-f0-9]{24}$/.test(id)) throw new Error("Compte inconnu.");
-  return path.join(DOSSIER_COMPTES, `${id}.json`);
+  return `comptes/${id}.json`;
 };
 
 export async function chargerCompte(id: string): Promise<Compte | null> {
   try {
-    return JSON.parse(await fs.readFile(fichier(id), "utf8")) as Compte;
+    return await lireJson<Compte | null>(fichier(id), null);
   } catch {
     return null;
   }
 }
 
-const verrous = new Map<string, Promise<unknown>>();
+/** Identifiants de tous les comptes. */
+export async function listerComptes(): Promise<string[]> {
+  return (await lister("comptes/")).map((e) => e.cle.match(/^comptes\/([a-f0-9]{24})\.json$/)?.[1]).filter((id): id is string => !!id);
+}
 
 /** Lit, modifie et réécrit un compte, sans que deux modifications du même compte se chevauchent. */
 export async function modifierCompte(id: string, modif: (c: Compte) => void | Promise<void>): Promise<Compte> {
-  const precedent = verrous.get(id) ?? Promise.resolve();
-  const suivant = precedent.catch(() => {}).then(async () => {
+  return avecVerrou(`compte:${id}`, async () => {
     const c = await chargerCompte(id);
     if (!c) throw new Error("Compte introuvable.");
     await modif(c);
-    await fs.writeFile(fichier(id), JSON.stringify(c, null, 2));
+    await ecrire(fichier(id), JSON.stringify(c, null, 2));
     return c;
   });
-  verrous.set(id, suivant);
-  try {
-    return await suivant;
-  } finally {
-    if (verrous.get(id) === suivant) verrous.delete(id);
-  }
 }
 
 export async function trouverOuCreerCompte(email: string): Promise<Compte> {
@@ -127,17 +126,15 @@ export async function trouverOuCreerCompte(email: string): Promise<Compte> {
   const existant = await chargerCompte(id);
   if (existant) return existant;
   const compte: Compte = { id, email: normaliserEmail(email), cree: new Date().toISOString(), droits: [], sitesSuivis: [] };
-  await fs.mkdir(DOSSIER_COMPTES, { recursive: true });
-  // « wx » : si deux requêtes créent le même compte en même temps, la seconde relit celui de la première.
-  await fs.writeFile(fichier(id), JSON.stringify(compte, null, 2), { flag: "wx" }).catch(() => {});
+  // Si deux requêtes créent le même compte en même temps, la seconde relit celui de la première.
+  await creerSiAbsent(fichier(id), JSON.stringify(compte, null, 2));
   return (await chargerCompte(id)) ?? compte;
 }
 
 /** Retrouve le compte d'un client Stripe (abonnements : les événements ne portent que l'identifiant client). */
 export async function compteParClientStripe(client: string): Promise<Compte | null> {
-  for (const f of await fs.readdir(DOSSIER_COMPTES).catch(() => [] as string[])) {
-    if (!/^[a-f0-9]{24}\.json$/.test(f)) continue;
-    const c = await chargerCompte(f.slice(0, 24));
+  for (const id of await listerComptes()) {
+    const c = await chargerCompte(id);
     if (c?.stripeClient === client) return c;
   }
   return null;

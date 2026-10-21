@@ -1,6 +1,5 @@
-import fs from "node:fs/promises";
-import { lancerAudit } from "./audit";
-import { DOSSIER_COMPTES, abonnementActif, offreAbonnement, chargerCompte, debloquerDomaine, domaineDe, modifierCompte, type Compte } from "./comptes";
+import { lancerAudit, purger } from "./audit";
+import { abonnementActif, offreAbonnement, chargerCompte, debloquerDomaine, domaineDe, listerComptes, modifierCompte, type Compte } from "./comptes";
 import { envoyerEmail } from "./email";
 import { origineSite, rappelerExpiration } from "./emails-clients";
 import { creerSauvegarde, derniereSauvegarde, sauvegardeConfiguree } from "./sauvegarde";
@@ -9,6 +8,9 @@ import { constatsCertains } from "./prospection/selection";
 import { calculerScore, evaluer } from "./rules/engine";
 import { signalerErreur } from "./journal";
 import { passeDeVeille } from "./veille";
+import { serverless } from "./navigateur";
+import { relancerCampagnes } from "./prospection/campagne";
+import { declencherSansAttendre } from "./taches";
 
 /**
  * Suivi des sites pour les abonnés : chaque site suivi est réaudité automatiquement chaque semaine ;
@@ -18,6 +20,10 @@ import { passeDeVeille } from "./veille";
 
 const INTERVALLE_JOURS = 7;
 const MAX_HISTORIQUE = 26;
+/** Audits lancés au plus par tournée : chacun tourne dans sa propre exécution (voir taches.ts). */
+const MAX_AUDITS_PAR_TOURNEE = 40;
+/** Un audit lancé depuis moins longtemps est considéré comme encore en cours. */
+const DELAI_RELANCE_MS = 3 * 3600_000;
 
 export async function ajouterSiteSuivi(compteId: string, saisie: string): Promise<void> {
   const compte = await chargerCompte(compteId);
@@ -30,8 +36,10 @@ export async function ajouterSiteSuivi(compteId: string, saisie: string): Promis
   if (compte.sitesSuivis.some((s) => s.domaine === domaine)) return;
   if (compte.sitesSuivis.length >= quota) throw new Error(quota > 1 ? `${quota} sites suivis au plus avec votre formule.` : "Votre formule couvre un site : passez à l'offre Agence pour en suivre plusieurs.");
   await debloquerDomaine(compteId, domaine, "abonnement");
-  await modifierCompte(compteId, (c) => void c.sitesSuivis.push({ domaine, url, ajoute: new Date().toISOString(), historique: [] }));
-  auditerSiteSuivi(compteId, domaine).catch((e) => signalerErreur("Suivi des sites", e, { domaine }));
+  const maintenant = new Date().toISOString();
+  await modifierCompte(compteId, (c) => void c.sitesSuivis.push({ domaine, url, ajoute: maintenant, historique: [], lance: maintenant }));
+  // Premier audit tout de suite, dans une exécution séparée.
+  await declencherSansAttendre({ type: "suivi", compte: compteId, domaine });
 }
 
 export async function retirerSiteSuivi(compteId: string, domaine: string): Promise<void> {
@@ -66,29 +74,45 @@ async function alerter(compte: Compte, domaine: string, auditId: string, nouveau
   }).catch((e) => signalerErreur("E-mail", e, { type: "alerte de suivi" }));
 }
 
-/** Passe en revue les abonnés et réaudite les sites dont le dernier audit date de plus d'une semaine. */
-export async function tourneeDeSuivi(): Promise<void> {
+/**
+ * Tournée quotidienne (tâche planifiée /api/cron) : ménage, veille du registre, rappels, puis lancement de
+ * l'audit des sites suivis dont le dernier audit date de plus d'une semaine.
+ */
+export async function tourneeDeSuivi(): Promise<{ auditsLances: number }> {
   const limite = Date.now() - INTERVALLE_JOURS * 86_400_000;
-  await purgerJetons();
+  await purgerJetons().catch((e) => signalerErreur("Tournée", e));
+  await purger().catch((e) => signalerErreur("Purge des audits", e));
   // Veille du registre : alertes « nouvelle obligation » et documents hébergés à mettre à jour.
   await passeDeVeille().catch((e) => signalerErreur("Veille du registre", e));
-  // Sauvegarde quotidienne, si une phrase secrète est configurée.
-  if (sauvegardeConfiguree()) {
+  // Sauvegarde quotidienne sur disque, si une phrase secrète est configurée. Sur Vercel, le disque n'est pas
+  // conservé : ce sont les sauvegardes de la base (Neon) qui prennent le relais, et « npm run sauvegarde ».
+  if (sauvegardeConfiguree() && !serverless()) {
     const derniere = await derniereSauvegarde();
     if (!derniere || Date.now() - derniere.getTime() > 23 * 3600_000) await creerSauvegarde().catch((e) => signalerErreur("Sauvegarde", e));
   }
-  for (const f of await fs.readdir(DOSSIER_COMPTES).catch(() => [] as string[])) {
-    if (!/^[a-f0-9]{24}\.json$/.test(f)) continue;
-    const compte = await chargerCompte(f.slice(0, 24));
+  // Campagnes de prospection dont la chaîne d'étapes s'est interrompue.
+  await relancerCampagnes().catch((e) => signalerErreur("Campagne de prospection", e));
+
+  let auditsLances = 0;
+  for (const id of await listerComptes()) {
+    const compte = await chargerCompte(id);
     if (!compte) continue;
     await rappels(compte);
     if (!abonnementActif(compte)) continue;
     for (const s of compte.sitesSuivis) {
       const dernier = s.historique.at(-1);
       if (dernier && Date.parse(dernier.date) > limite) continue;
-      await auditerSiteSuivi(compte.id, s.domaine).catch((e) => signalerErreur("Suivi des sites", e, { domaine: s.domaine }));
+      if (s.lance && Date.now() - Date.parse(s.lance) < DELAI_RELANCE_MS) continue;
+      if (auditsLances >= MAX_AUDITS_PAR_TOURNEE) return { auditsLances };
+      await modifierCompte(compte.id, (c) => {
+        const x = c.sitesSuivis.find((y) => y.domaine === s.domaine);
+        if (x) x.lance = new Date().toISOString();
+      });
+      await declencherSansAttendre({ type: "suivi", compte: compte.id, domaine: s.domaine });
+      auditsLances++;
     }
   }
+  return { auditsLances };
 }
 
 /** Deux jours avant la fin d'un achat de 14 jours : un e-mail de rappel, une seule fois. */
@@ -105,7 +129,10 @@ async function rappels(compte: Compte): Promise<void> {
   }
 }
 
-/** Lance la tournée toutes les heures dans le processus serveur (appelé une fois au démarrage). */
+/**
+ * Serveur classique (hors Vercel) : lance la tournée toutes les heures dans le processus serveur (appelé une
+ * fois au démarrage). Sur Vercel, c'est la tâche planifiée de vercel.json qui appelle /api/cron.
+ */
 export function demarrerSuivi(): void {
   const g = globalThis as { __vigieSuivi?: NodeJS.Timeout };
   if (g.__vigieSuivi) return;

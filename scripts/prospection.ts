@@ -6,14 +6,14 @@ import fs from "node:fs/promises";
 import { creerCampagne, executerCampagne, normaliserSites } from "../src/lib/prospection/campagne";
 import { expediteurDepuisEnv } from "../src/lib/prospection/mail";
 import { restreindreDroits } from "../src/lib/donnees";
-
-restreindreDroits();
+import { fermerStockage, stockageEnBase } from "../src/lib/stockage";
 
 try {
   process.loadEnvFile(".env.local");
 } catch {
   /* pas de fichier : variables d'environnement seules */
 }
+if (!stockageEnBase()) restreindreDroits();
 
 const args = process.argv.slice(2);
 const iPause = args.indexOf("--pause");
@@ -32,4 +32,5 @@ const id = await creerCampagne(sites, { pause: iPause >= 0 ? Number(args[iPause 
 await executerCampagne(id, (l, rang, total) =>
   console.log(`[${rang}/${total}] ${l.site} → ${l.etat}${l.note !== undefined ? ` (${l.note}/100, ${l.manquements} manquement(s))` : ""}${l.detail ? ` : ${l.detail}` : ""}`),
 );
-console.log(`\nCampagne ${id} terminée. Revue et envoi : /prospection (ou data/prospection/${id}/).`);
+console.log(`\nCampagne ${id} terminée. Revue et envoi : /prospection${stockageEnBase() ? "" : ` (ou data/prospection/${id}/)`}.`);
+await fermerStockage();

@@ -4,9 +4,10 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { promisify } from "node:util";
 import { RACINE_DONNEES } from "./donnees";
+import { ecrire, lire, lister as listerStockage, stockageEnBase } from "./stockage";
 
 /**
- * Sauvegardes de data/ : un fichier unique, compressé puis chiffré (AES-256-GCM, clé dérivée de
+ * Sauvegardes de toutes les données (dossier data/ ou base Postgres) : un fichier unique, compressé puis chiffré (AES-256-GCM, clé dérivée de
  * VIGIE_SAUVEGARDE_CLE par scrypt). Sans la phrase secrète, une sauvegarde est illisible : elle peut
  * donc être copiée sur un stockage externe (autre disque, stockage objet, cloud).
  */
@@ -53,14 +54,17 @@ export async function dechiffrer(contenu: Buffer, cle: string): Promise<Buffer> 
   }
 }
 
-/** Crée une sauvegarde de data/ et ne garde que les plus récentes. Renvoie le chemin du fichier. */
+/** Crée une sauvegarde de toutes les données et ne garde que les plus récentes. Renvoie le chemin du fichier. */
 export async function creerSauvegarde(): Promise<string> {
   const cle = process.env.VIGIE_SAUVEGARDE_CLE?.trim();
   if (!cle || cle.length < 16) throw new Error("VIGIE_SAUVEGARDE_CLE (16 caractères au moins) n'est pas définie.");
   const cible = dossierSauvegardes();
-  if (cible.startsWith(path.resolve(RACINE_DONNEES) + path.sep)) throw new Error("Le dossier des sauvegardes doit être en dehors de data/.");
+  if (!stockageEnBase() && cible.startsWith(path.resolve(RACINE_DONNEES) + path.sep)) throw new Error("Le dossier des sauvegardes doit être en dehors de data/.");
   const fichiers: Record<string, string> = {};
-  for (const rel of await lister(RACINE_DONNEES)) fichiers[rel] = (await fs.readFile(path.join(RACINE_DONNEES, rel))).toString("base64");
+  for (const { cle } of await listerStockage("")) {
+    const contenu = await lire(cle);
+    if (contenu) fichiers[cle] = contenu.toString("base64");
+  }
   const archive = await gzip(Buffer.from(JSON.stringify({ version: 1, date: new Date().toISOString(), fichiers })));
   await fs.mkdir(cible, { recursive: true });
   const nom = `vigie-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.vigie`;
@@ -83,6 +87,22 @@ export async function restaurerSauvegarde(fichier: string, cle: string, destinat
     if (!cible.startsWith(racine + path.sep)) throw new Error(`Chemin refusé dans la sauvegarde : ${rel}`);
     await fs.mkdir(path.dirname(cible), { recursive: true, mode: 0o700 });
     await fs.writeFile(cible, Buffer.from(b64, "base64"), { mode: 0o600 });
+    n++;
+  }
+  return n;
+}
+
+/**
+ * Recopie un dossier de données (data/ d'un serveur classique, ou une sauvegarde restaurée) dans le stockage
+ * actuel : c'est ainsi qu'on passe les données existantes dans la base Postgres. Les clés existantes sont remplacées.
+ */
+export async function importerDossier(source: string): Promise<number> {
+  const racine = path.resolve(source);
+  let n = 0;
+  for (const rel of await lister(racine)) {
+    const cle = rel.split(path.sep).join("/");
+    if (cle.startsWith(".")) continue; // .secret-dev : propre au développement
+    await ecrire(cle, await fs.readFile(path.join(racine, rel)));
     n++;
   }
   return n;

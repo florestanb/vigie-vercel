@@ -1,5 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import fs from "node:fs";
+import type { Browser, BrowserContext, Page } from "playwright-core";
 import net from "node:net";
 import type { Capture, DonneesCrawl, Formulaire, Lien, PageLegale } from "../types";
 import { testerAccessibilite } from "./accessibilite";
@@ -13,6 +12,7 @@ import {
   PLATEFORMES,
   RE,
 } from "./patterns";
+import { lancerNavigateur, navigateurDistant } from "../navigateur";
 import { proxyFiltrant } from "./proxy-filtrant";
 import { MOTIF_REFUS, classerCookies, classerRequetes, testerRefus } from "./refus";
 import { hoteInterdit } from "./reseau";
@@ -31,17 +31,7 @@ const estPdf = (href: string) => /\.pdf$/i.test(new URL(href).pathname);
 const DELAI_PAGE = 25_000;
 const DUREE_MAX_AUDIT = 240_000;
 
-export function cheminChromium(): string | undefined {
-  const candidats = [
-    process.env.CHROMIUM_PATH,
-    "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  ];
-  return candidats.find((c) => c && fs.existsSync(c));
-}
+export { cheminChromium } from "../navigateur";
 
 /** Domaine enregistrable approximatif (exemple.fr, exemple.co.uk). */
 export function domaineRacine(host: string): string {
@@ -243,8 +233,10 @@ async function parcourir(urlSaisie: string, options: OptionsCrawl, etat: { navig
   try {
     // Tout le trafic du navigateur passe par le proxy filtrant (aucun accès au réseau interne), y compris
     // celui vers localhost, que Chromium exempte de proxy par défaut (« <-loopback> » annule l'exemption).
-    const proxy = process.env.VIGIE_PROXY ? { server: process.env.VIGIE_PROXY } : { server: await proxyFiltrant(), bypass: "<-loopback>" };
-    const lance = await chromium.launch({ executablePath: cheminChromium(), headless: true, args: ["--no-sandbox"], proxy });
+    // Un navigateur distant ne peut pas joindre ce proxy local : il est filtré requête par requête.
+    const filtrageParRequete = !!process.env.VIGIE_PROXY || navigateurDistant();
+    const proxy = navigateurDistant() ? undefined : process.env.VIGIE_PROXY ? { server: process.env.VIGIE_PROXY } : { server: await proxyFiltrant(), bypass: "<-loopback>" };
+    const lance = await lancerNavigateur({ proxy });
     navigateur = lance;
     etat.navigateur = lance;
     const ouvrirContexte = async (): Promise<BrowserContext> => {
@@ -256,9 +248,9 @@ async function parcourir(urlSaisie: string, options: OptionsCrawl, etat: { navig
         extraHTTPHeaders: { "Accept-Language": "fr-FR,fr;q=0.9" },
         proxy,
       });
-      if (process.env.VIGIE_PROXY) {
-        // Proxy sortant imposé par l'hébergement : le filtre local n'est pas en place, on filtre au moins
-        // chaque requête (les redirections lui échappent : préférer le proxy filtrant).
+      if (filtrageParRequete) {
+        // Proxy sortant imposé par l'hébergement ou navigateur distant : le filtre local n'est pas en place,
+        // on filtre au moins chaque requête (les redirections lui échappent : préférer le proxy filtrant).
         await ctx.route("**/*", async (route) => {
           let hote = "";
           try {

@@ -1,9 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { formule } from "./abonnes";
 import { chargerAudit } from "./audit";
-import { DOSSIER_COMPTES, chargerCompte, modifierCompte, type Compte } from "./comptes";
-import { RACINE_DONNEES } from "./donnees";
+import { chargerCompte, listerComptes, modifierCompte, type Compte } from "./comptes";
 import type { TypeDocument } from "./documents/plans";
 import { signalerMiseAJour, titreDocument, type DocumentHeberge } from "./documents-heberges";
 import { envoyerEmail } from "./email";
@@ -13,6 +10,7 @@ import { CATALOGUE } from "./rules/catalogue";
 import { conditionsRemplies } from "./rules/engine";
 import type { Regle } from "./types";
 import { empreinteRegle } from "./rules/empreinte";
+import { ecrire, lireJson } from "./stockage";
 
 export { empreinteRegle };
 
@@ -21,11 +19,11 @@ export { empreinteRegle };
  * chaque abonné reçoit la liste des obligations qui concernent réellement ses sites suivis (d'après le profil
  * de leur dernier audit), et ses documents hébergés touchés sont marqués « à mettre à jour ».
  *
- * L'état du registre déjà connu est gardé dans data/veille/registre.json. Au tout premier passage, il est
+ * L'état du registre déjà connu est gardé dans veille/registre.json. Au tout premier passage, il est
  * seulement enregistré : aucune alerte n'est envoyée pour l'existant.
  */
 
-const FICHIER = path.join(RACINE_DONNEES, "veille", "registre.json");
+const FICHIER = "veille/registre.json";
 
 /** Version du calcul d'empreinte : un changement de calcul ne doit pas passer pour un changement de toutes les règles. */
 const ALGO = "fnv1a-64";
@@ -44,16 +42,11 @@ export interface Changement {
 }
 
 async function lireEtat(): Promise<Etat | null> {
-  try {
-    return JSON.parse(await fs.readFile(FICHIER, "utf8")) as Etat;
-  } catch {
-    return null;
-  }
+  return lireJson<Etat | null>(FICHIER, null);
 }
 
 async function ecrireEtat(e: Etat): Promise<void> {
-  await fs.mkdir(path.dirname(FICHIER), { recursive: true });
-  await fs.writeFile(FICHIER, JSON.stringify(e, null, 1));
+  await ecrire(FICHIER, JSON.stringify(e, null, 1));
 }
 
 /** Différences entre le registre actuel et l'état connu. */
@@ -141,9 +134,8 @@ export async function passeDeVeille(maintenant = new Date()): Promise<{ changeme
   const marques = await signalerMiseAJour(parType);
 
   let alertes = 0;
-  for (const f of await fs.readdir(DOSSIER_COMPTES).catch(() => [] as string[])) {
-    if (!/^[a-f0-9]{24}\.json$/.test(f)) continue;
-    const compte = await chargerCompte(f.slice(0, 24));
+  for (const id of await listerComptes()) {
+    const compte = await chargerCompte(id);
     if (!compte || !formule(compte)?.suivi) continue;
     try {
       const liste = await concernes(compte, changements);

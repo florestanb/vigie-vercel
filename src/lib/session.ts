@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { cookies } from "next/headers";
-import { DOSSIER_COMPTES, chargerCompte, type Compte } from "./comptes";
+import { chargerCompte, type Compte } from "./comptes";
 import { RACINE_DONNEES } from "./donnees";
+import { ecrire, lireJson, lister, retirer, supprimer } from "./stockage";
 
 /**
  * Session client : cookie httpOnly « compte.expiration.signature », signé avec VIGIE_SECRET.
@@ -62,7 +63,7 @@ export async function compteConnecte(): Promise<Compte | null> {
 
 // ---------- Liens de connexion par e-mail ----------
 
-const DOSSIER_JETONS = () => path.join(DOSSIER_COMPTES, "jetons");
+const cleJeton = (empreinteJeton: string) => `comptes/jetons/${empreinteJeton}.json`;
 const empreinte = (jeton: string) => crypto.createHash("sha256").update(jeton).digest("hex");
 
 export interface OptionsJeton {
@@ -79,9 +80,8 @@ const suiteSure = (s: unknown) => (typeof s === "string" && /^\/(?![/\\])[\w\-/?
 /** Crée un lien de connexion. Seule l'empreinte du jeton est stockée. */
 export async function creerJetonConnexion(email: string, options: OptionsJeton = {}): Promise<string> {
   const jeton = crypto.randomBytes(32).toString("base64url");
-  await fs.promises.mkdir(DOSSIER_JETONS(), { recursive: true });
-  await fs.promises.writeFile(
-    path.join(DOSSIER_JETONS(), `${empreinte(jeton)}.json`),
+  await ecrire(
+    cleJeton(empreinte(jeton)),
     JSON.stringify({ email, exp: Date.now() + (options.dureeMs ?? 30 * 60_000), reutilisable: !!options.reutilisable, suite: suiteSure(options.suite) }),
   );
   return jeton;
@@ -90,27 +90,29 @@ export async function creerJetonConnexion(email: string, options: OptionsJeton =
 /** Utilise un jeton : renvoie l'adresse et la page de destination s'il est valide (et le détruit s'il est à usage unique). */
 export async function consommerJetonConnexion(jeton: string): Promise<{ email: string; suite: string } | null> {
   if (!/^[\w-]{20,100}$/.test(jeton)) return null;
-  const f = path.join(DOSSIER_JETONS(), `${empreinte(jeton)}.json`);
+  const cle = cleJeton(empreinte(jeton));
+  type Jeton = { email: string; exp: number; reutilisable?: boolean; suite?: string };
   try {
-    const { email, exp, reutilisable, suite } = JSON.parse(await fs.promises.readFile(f, "utf8")) as { email: string; exp: number; reutilisable?: boolean; suite?: string };
-    if (exp <= Date.now()) {
-      await fs.promises.unlink(f).catch(() => {});
+    const lu = await lireJson<Jeton | null>(cle, null);
+    if (!lu) return null;
+    if (lu.exp <= Date.now()) {
+      await supprimer(cle).catch(() => {});
       return null;
     }
-    if (!reutilisable) await fs.promises.unlink(f);
-    return { email, suite: suiteSure(suite) };
+    // Usage unique : seul le premier qui le retire peut s'en servir (deux clics simultanés n'ouvrent qu'une session).
+    if (!lu.reutilisable && !(await retirer(cle))) return null;
+    return { email: lu.email, suite: suiteSure(lu.suite) };
   } catch {
     return null;
   }
 }
 
-/** Supprime les jetons expirés (appelé par la tournée horaire). */
+/** Supprime les jetons expirés (appelé par la tournée quotidienne). */
 export async function purgerJetons(): Promise<void> {
-  for (const f of await fs.promises.readdir(DOSSIER_JETONS()).catch(() => [] as string[])) {
-    const chemin = path.join(DOSSIER_JETONS(), f);
+  for (const { cle } of await lister("comptes/jetons/").catch(() => [])) {
     try {
-      const { exp } = JSON.parse(await fs.promises.readFile(chemin, "utf8")) as { exp: number };
-      if (exp <= Date.now()) await fs.promises.unlink(chemin);
+      const { exp } = await lireJson<{ exp: number }>(cle, { exp: 0 });
+      if (exp <= Date.now()) await supprimer(cle);
     } catch {
       /* fichier illisible : ignoré */
     }

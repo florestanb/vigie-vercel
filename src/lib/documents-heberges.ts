@@ -1,10 +1,8 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-import { RACINE_DONNEES } from "./donnees";
 import type { TypeDocument } from "./documents/plans";
 import { PLANS } from "./documents/plans";
 import { DERNIERE_MISE_A_JOUR } from "./rules/catalogue";
+import { ecrire as ecrireFichier, lireJson, lireTexte, lister, supprimer } from "./stockage";
 
 /**
  * Documents hébergés : le client intègre une fois un document approuvé à son site (lien, cadre ou script),
@@ -15,8 +13,6 @@ import { DERNIERE_MISE_A_JOUR } from "./rules/catalogue";
  * Vigie ne publie jamais un texte que le client n'a pas approuvé : la version servie est toujours la
  * dernière version approuvée, avec la date et l'empreinte de cette approbation.
  */
-
-export const DOSSIER_HEBERGES = path.join(RACINE_DONNEES, "documents-heberges");
 
 export interface VersionHebergee {
   texte: string;
@@ -45,28 +41,27 @@ export interface DocumentHeberge {
 const empreinte = (texte: string) => crypto.createHash("sha256").update(texte, "utf8").digest("hex");
 const fichier = (id: string) => {
   if (!/^[\w-]{16,40}$/.test(id)) throw new Error("Document inconnu.");
-  return path.join(DOSSIER_HEBERGES, `${id}.json`);
+  return `documents-heberges/${id}.json`;
 };
 
 export async function chargerHeberge(id: string): Promise<DocumentHeberge | null> {
   try {
-    return JSON.parse(await fs.readFile(fichier(id), "utf8")) as DocumentHeberge;
+    return await lireJson<DocumentHeberge | null>(fichier(id), null);
   } catch {
     return null;
   }
 }
 
 async function ecrire(d: DocumentHeberge): Promise<void> {
-  await fs.mkdir(DOSSIER_HEBERGES, { recursive: true });
-  await fs.writeFile(`${fichier(d.id)}.tmp`, JSON.stringify(d));
-  await fs.rename(`${fichier(d.id)}.tmp`, fichier(d.id));
+  await ecrireFichier(fichier(d.id), JSON.stringify(d));
 }
 
 export async function tousLesHeberges(): Promise<DocumentHeberge[]> {
   const liste: DocumentHeberge[] = [];
-  for (const f of await fs.readdir(DOSSIER_HEBERGES).catch(() => [] as string[])) {
-    if (!f.endsWith(".json")) continue;
-    const d = await chargerHeberge(f.slice(0, -5));
+  for (const { cle } of await lister("documents-heberges/").catch(() => [])) {
+    const id = cle.match(/^documents-heberges\/([\w-]+)\.json$/)?.[1];
+    if (!id) continue;
+    const d = await chargerHeberge(id);
     if (d) liste.push(d);
   }
   return liste;
@@ -80,7 +75,7 @@ export async function hebergesDuCompte(compte: string): Promise<DocumentHeberge[
 export async function estApprouve(auditId: string, type: string, texte: string): Promise<{ date: string } | null> {
   if (!/^[\w-]{6,40}$/.test(auditId)) return null;
   const e = empreinte(texte);
-  const lignes = (await fs.readFile(path.join(RACINE_DONNEES, "approbations", `${auditId}.jsonl`), "utf8").catch(() => "")).split("\n");
+  const lignes = ((await lireTexte(`approbations/${auditId}.jsonl`).catch(() => null)) ?? "").split("\n");
   for (const l of lignes.reverse()) {
     try {
       const a = JSON.parse(l) as { date: string; type: string; empreinte: string };
@@ -118,7 +113,7 @@ export async function publierHeberge(compte: string, domaine: string, type: Type
 
 export async function retirerHeberge(compte: string, id: string): Promise<void> {
   const d = await chargerHeberge(id);
-  if (d?.compte === compte) await fs.unlink(fichier(id));
+  if (d?.compte === compte) await supprimer(fichier(id));
 }
 
 /** Marque « à mettre à jour » les documents touchés par des règles modifiées du registre. Renvoie les documents marqués. */

@@ -17,15 +17,18 @@
     "verifier": "tsx scripts/verifier.ts",
     "exemple": "tsx scripts/exemple.ts",
     "citations": "tsx scripts/citations.ts",
-    "revue": "tsx scripts/revue.ts"
+    "revue": "tsx scripts/revue.ts",
+    "migrer": "tsx scripts/migrer.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.133.0",
+    "@sparticuz/chromium": "^153.0.0",
     "axe-core": "^4.14.0",
     "marked": "^15.0.12",
     "next": "^15.5.27",
     "pdfjs-dist": "^6.4.299",
     "playwright-core": "^1.64.0",
+    "postgres": "^3.4.9",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "stripe": "^23.0.0",

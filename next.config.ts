@@ -12,9 +12,30 @@ const ENTETES = [
   ...(process.env.NODE_ENV === "production" ? [{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" }] : []),
 ];
 
+/** Fichiers lus à l'exécution (chemins calculés) : à embarquer dans les fonctions Vercel. */
+const FICHIERS_EXECUTION = [
+  // Chromium compressé pour Vercel (décompressé dans /tmp au premier lancement).
+  "./node_modules/@sparticuz/chromium/bin/**",
+  // Tests d'accessibilité injectés dans les pages auditées.
+  "./node_modules/axe-core/axe.min.js",
+  "./node_modules/axe-core/locales/fr.json",
+  // Lecture des CGV publiées en PDF.
+  "./node_modules/pdfjs-dist/legacy/build/**",
+];
+
 const config: NextConfig = {
-  // Playwright pilote un vrai navigateur : il reste hors du bundle serveur.
-  serverExternalPackages: ["playwright-core"],
+  // Playwright pilote un vrai navigateur, pdf.js charge son « worker » par un chemin : hors du bundle serveur.
+  serverExternalPackages: ["playwright-core", "@sparticuz/chromium", "pdfjs-dist"],
+  // Seules les routes qui lancent un navigateur (audit, PDF, tâches) embarquent Chromium.
+  outputFileTracingIncludes: {
+    "/api/audit": FICHIERS_EXECUTION,
+    "/api/audit/[id]/pdf": FICHIERS_EXECUTION,
+    "/api/v1/audits": FICHIERS_EXECUTION,
+    "/api/compte/dossier": FICHIERS_EXECUTION,
+    "/api/documents/pdf": FICHIERS_EXECUTION,
+    "/api/interne/tache": FICHIERS_EXECUTION,
+    "/api/cron": FICHIERS_EXECUTION,
+  },
   poweredByHeader: false,
   async headers() {
     return [

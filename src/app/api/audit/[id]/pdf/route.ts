@@ -16,7 +16,7 @@ export async function GET(req: Request, { params }: Params) {
   if (!audit) return new Response("Audit introuvable.", { status: 404 });
   const acces = await accesAudit(audit);
   if (!acces.complet) return new Response("Accès réservé.", { status: 402 });
-  if (!autoriser("pdf:" + ipDe(req), 30, 60 * 60_000)) return new Response("Trop de demandes.", { status: 429 });
+  if (!(await autoriser("pdf:" + ipDe(req), 30, 60 * 60_000))) return new Response("Trop de demandes.", { status: 429 });
   try {
     const avant = await auditPrecedent(audit);
     const pdf = await rapportPdf(audit, { evolution: avant ? { avant, apres: pointDe(audit) } : null, marque: marqueDe(acces.compte), captures: await lireCaptures(audit) });
